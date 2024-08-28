@@ -56,67 +56,11 @@ def rot(q, v):
     v = torch.from_numpy(v).contiguous()
     return tquat.rot(q, v).numpy()
 
-def mat2quat(R):
-    """
-    from paper: Ganimator (tested)
-    but adapted for numpy instead of torch
-    """
-
-    # The rotation matrix must be orthonormal
-
-    w2 = (1 + R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2])
-    x2 = (1 + R[..., 0, 0] - R[..., 1, 1] - R[..., 2, 2])
-    y2 = (1 - R[..., 0, 0] + R[..., 1, 1] - R[..., 2, 2])
-    z2 = (1 - R[..., 0, 0] - R[..., 1, 1] + R[..., 2, 2])
-
-    yz = (R[..., 1, 2] + R[..., 2, 1])
-    xz = (R[..., 2, 0] + R[..., 0, 2])
-    xy = (R[..., 0, 1] + R[..., 1, 0])
-
-    wx = (R[..., 2, 1] - R[..., 1, 2])
-    wy = (R[..., 0, 2] - R[..., 2, 0])
-    wz = (R[..., 1, 0] - R[..., 0, 1])
-
-    w = np.empty_like(x2)
-    x = np.empty_like(x2)
-    y = np.empty_like(x2)
-    z = np.empty_like(x2)
-
-    flagA = (R[..., 2, 2] < 0) * (R[..., 0, 0] > R[..., 1, 1])
-    flagB = (R[..., 2, 2] < 0) * (R[..., 0, 0] <= R[..., 1, 1])
-    flagC = (R[..., 2, 2] >= 0) * (R[..., 0, 0] < -R[..., 1, 1])
-    flagD = (R[..., 2, 2] >= 0) * (R[..., 0, 0] >= -R[..., 1, 1])
-
-    x[flagA] = np.sqrt(x2[flagA])
-    w[flagA] = wx[flagA] / x[flagA]
-    y[flagA] = xy[flagA] / x[flagA]
-    z[flagA] = xz[flagA] / x[flagA]
-
-    y[flagB] = np.sqrt(y2[flagB])
-    w[flagB] = wy[flagB] / y[flagB]
-    x[flagB] = xy[flagB] / y[flagB]
-    z[flagB] = yz[flagB] / y[flagB]
-
-    z[flagC] = np.sqrt(z2[flagC])
-    w[flagC] = wz[flagC] / z[flagC]
-    x[flagC] = xz[flagC] / z[flagC]
-    y[flagC] = yz[flagC] / z[flagC]
-
-    w[flagD] = np.sqrt(w2[flagD])
-    x[flagD] = wx[flagD] / w[flagD]
-    y[flagD] = wy[flagD] / w[flagD]
-    z[flagD] = wz[flagD] / w[flagD]
-
-    res = [w, x, y, z]
-    res = [np.expand_dims(z, axis=-1) for z in res]
-
-    return np.concatenate(res, axis=-1) / 2
-
 def quat2mat(q):
     """
     from paper: Ganimator
     
-    Convert (w, x, y, z) quaternions to 3x3 rotation matrix (tested)
+    Convert (w, x, y, z) quaternions to 3x3 rotation matrix
     :param quats: quaternions of shape (..., 4)
     :return:  rotation matrices of shape (..., 3, 3)
     """

@@ -16,6 +16,7 @@ import numpy as np
 
 from common import utils
 from common import bvh_tools as bvh
+from common import fbx_tools as fbx
 from common import mocap_tools as mocap
 from common.quaternion import qmul, qrot, qnormalize_np, slerp, qfix
 from common.pose_renderer import PoseRenderer
@@ -34,41 +35,10 @@ print('Using {} device'.format(device))
 Mocap Data
 """
 
-mocap_file_path = "../../../../../../Data/mocap/stocos/duets"
-mocap_files = [ [ "Jason_Take4.bvh", "Sherise_Take4.bvh" ] ]
+mocap_file_path = "D:/Data/mocap/stocos/Duets/Amsterdam_2024/fbx_50hz"
+mocap_files = [ [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ] ]
 mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
-
-joint_loss_weights = [ 
-    1.0, # Hips
-    1.0, # RightUpLeg
-    1.0, # RightLeg
-    1.0, # RightFoot
-    1.0, # RightToeBase
-    1.0, # RightToeBase_Nub
-    1.0, # LeftUpLeg
-    1.0, # LeftLeg
-    1.0, # LeftFoot
-    1.0, # LeftToeBase
-    1.0, # LeftToeBase_Nub
-    1.0, # Spine
-    1.0, # Spine1
-    1.0, # Spine2
-    1.0, # Spine3
-    1.0, # LeftShoulder
-    1.0, # LeftArm
-    1.0, # LeftForeArm
-    1.0, # LeftHand
-    1.0, # LeftHand_Nub
-    1.0, # RightShoulder
-    1.0, # RightArm
-    1.0, # RightForeArm
-    1.0, # RightHand
-    1.0, # RightHand_Nub
-    1.0, # Neck
-    1.0, # Head
-    1.0 # Head_Nub
-    ]
-
+mocap_pos_scale = 1.0
 mocap_fps = 50
 
 """
@@ -83,7 +53,7 @@ ae_rnn_bidirectional = True
 ae_dense_layer_sizes = [ 512 ]
 
 save_weights = True
-load_weights = True
+load_weights = False
 
 encoder_weights_file = "results_deepfake_jason_sherise/weights/encoder_weights_epoch_600"
 decoder1_weights_file = "results_deepfake_jason_sherise/weights/decoder1_weights_epoch_600"
@@ -114,6 +84,49 @@ model_save_interval = 50
 save_history = True
 
 """
+# zed body34 specific joint loss weights
+# todo: this information should be stored in config files
+joint_loss_weights = [
+    1.0, # PELVIS
+    1.0, # NAVAL SPINE
+    1.0, # CHEST SPINE
+    1.0, # RIGHT CLAVICLE
+    1.0, # RIGHT SHOULDER
+    1.0, # RIGHT ELBOW
+    1.0, # RIGHT WRIST
+    1.0, # RIGHT HAND
+    0.1, # RIGHT HANDTIP
+    0.1, # RIGHT THUMB
+    1.0, # NECK
+    1.0, # HEAD
+    0.1, # NOSE
+    0.1, # LEFT EYE
+    0.1, # LEFT EAR
+    0.1, # RIGHT EYE
+    0.1, # RIGHT EAR
+    1.0, # LEFT CLAVICLE
+    1.0, # LEFT SHOULDER
+    1.0, # LEFT ELBOW
+    1.0, # LEFT WRIST
+    1.0, # LEFT HAND
+    0.1, # LEFT HANDTIP
+    0.1, # LEFT THUMB
+    1.0, # LEFT HIP
+    1.0, # LEFT KNEE
+    1.0, # LEFT ANKLE
+    1.0, # LEFT FOOT
+    1.0, # LEFT HEEL
+    1.0, # RIGHT HIP
+    1.0, # RIGHT KNEE
+    1.0, # RIGHT ANKLE
+    1.0, # RIGHT FOOT
+    1.0 # RIGHT HEEL
+    ]
+"""
+
+joint_loss_weights = [ 1.0 ] # assign individual weights to joints if not all the weights are identical
+
+"""
 Visualization settings
 """
 
@@ -127,6 +140,7 @@ Load mocap data
 """
 
 bvh_tools = bvh.BVH_Tools()
+fbx_tools = fbx.FBX_Tools()
 mocap_tools = mocap.Mocap_Tools()
 
 all_mocap_data_dancer1 = []
@@ -136,20 +150,42 @@ for mocap_file_dancer1, mocap_file_dancer2 in mocap_files:
     
     print("process file for dancer 1 ", mocap_file_dancer1)
     
-    bvh_data_dancer1 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer1)
-    mocap_data_dancer1 = mocap_tools.bvh_to_mocap(bvh_data_dancer1)
+    if mocap_file_dancer1.endswith(".bvh") or mocap_file_dancer1.endswith(".BVH"):
+        bvh_data_dancer1 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer1)
+        mocap_data_dancer1 = mocap_tools.bvh_to_mocap(bvh_data_dancer1)
+    elif mocap_file_dancer1.endswith(".fbx") or mocap_file_dancer1.endswith(".FBX"):
+        fbx_data_dancer1 = fbx_tools.load(mocap_file_path + "/" + mocap_file_dancer1)
+        mocap_data_dancer1 = mocap_tools.fbx_to_mocap(fbx_data_dancer1)[0] # first skeleton only
+   
+    mocap_data_dancer1["skeleton"]["offsets"] *= mocap_pos_scale
+    mocap_data_dancer1["motion"]["pos_local"] *= mocap_pos_scale
+    
+    # set x and z offset of root joint to zero
+    mocap_data_dancer1["skeleton"]["offsets"][0, 0] = 0.0 
+    mocap_data_dancer1["skeleton"]["offsets"][0, 2] = 0.0 
+   
     mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
-
     all_mocap_data_dancer1.append(mocap_data_dancer1)
 
     print("process file for dancer 2 ", mocap_file_dancer2)
     
-    bvh_data_dancer2 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer2)
-    mocap_data_dancer2 = mocap_tools.bvh_to_mocap(bvh_data_dancer2)
+    if mocap_file_dancer2.endswith(".bvh") or mocap_file_dancer2.endswith(".BVH"):
+        bvh_data_dancer2 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer2)
+        mocap_data_dancer2 = mocap_tools.bvh_to_mocap(bvh_data_dancer2)
+    elif mocap_file_dancer2.endswith(".fbx") or mocap_file_dancer2.endswith(".FBX"):
+        fbx_data_dancer2 = fbx_tools.load(mocap_file_path + "/" + mocap_file_dancer2)
+        mocap_data_dancer2 = mocap_tools.fbx_to_mocap(fbx_data_dancer2)[0] # first skeleton only
+        
+    mocap_data_dancer2["skeleton"]["offsets"] *= mocap_pos_scale
+    mocap_data_dancer2["motion"]["pos_local"] *= mocap_pos_scale
+    
+    # set x and z offset of root joint to zero
+    mocap_data_dancer2["skeleton"]["offsets"][0, 0] = 0.0 
+    mocap_data_dancer2["skeleton"]["offsets"][0, 2] = 0.0 
+    
     mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
 
     all_mocap_data_dancer2.append(mocap_data_dancer2)
-
 
 # retrieve mocap properties (from dancer 1, dancer 2 properties are supposed to be identical)
 mocap_data = all_mocap_data_dancer1[0]
@@ -247,7 +283,9 @@ X_batch, y_batch = next(iter(train_loader))
 print("X_batch s ", X_batch.shape)
 print("y_batch s ", y_batch.shape)
 
-# create models
+"""
+Create Models
+"""
 
 # create encoder model
 
@@ -435,7 +473,9 @@ print("decoder2_test_input s ", decoder2_test_input.shape)
 print("decoder1_test_output s ", decoder1_test_output.shape)
 print("decoder2_test_output s ", decoder2_test_output.shape)
     
+"""
 # Training
+"""
 
 def calc_kld_scales():
     
@@ -466,6 +506,13 @@ kld_scales = calc_kld_scales()
 ae_optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder1.parameters()) + list(decoder2.parameters()), lr=ae_learning_rate)
 ae_scheduler = torch.optim.lr_scheduler.StepLR(ae_optimizer, step_size=100, gamma=0.316) # reduce the learning every 100 epochs by a factor of 10
 
+# extend joint loss array if necessary
+if len(joint_loss_weights) == 1:
+    joint_loss_weights *= joint_count
+
+joint_loss_weights = torch.tensor(joint_loss_weights, dtype=torch.float32)
+joint_loss_weights = joint_loss_weights.reshape(1, 1, -1).to(device)
+
 mse_loss = nn.MSELoss()
 cross_entropy = nn.BCELoss()
 
@@ -488,11 +535,6 @@ def variational_loss2(mu, std):
 def reparameterize(mu, std):
     z = mu + std*torch.randn_like(std)
     return z
-
-# joint loss weights
-
-joint_loss_weights = torch.tensor(joint_loss_weights, dtype=torch.float32)
-joint_loss_weights = joint_loss_weights.reshape(1, 1, -1).to(device)
 
 # function returning normal distributed random data 
 # serves as reference for the discriminator to distinguish the encoders prior from
@@ -835,52 +877,74 @@ torch.save(encoder.state_dict(), "results/weights/encoder_weights_epoch_{}".form
 torch.save(decoder1.state_dict(), "results/weights/decoder1_weights_epoch_{}".format(epochs))
 torch.save(decoder2.state_dict(), "results/weights/decoder2_weights_epoch_{}".format(epochs))
 
-# inference and rendering 
+"""
+Inference and Rendering 
+"""
 
 poseRenderer = PoseRenderer(edge_list)
 
-def create_ref_sequence_anim(mocap_index, pose_index, pose_count, file_name1, file_name2):
+def export_sequence_anim(pose_sequence, file_name):
     
-    mocap_data_dancer1 = all_mocap_data_dancer1[mocap_index]
-    mocap_data_dancer2 = all_mocap_data_dancer2[mocap_index]
+    pose_count = pose_sequence.shape[0]
+    pose_sequence = np.reshape(pose_sequence, (pose_count, joint_count, joint_dim))
     
-    pose_seq_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    pose_seq_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    
-    seq_excerpt_dancer1 = pose_seq_dancer1[pose_index:pose_index+pose_count, ...]
-    seq_excerpt_dancer2 = pose_seq_dancer2[pose_index:pose_index+pose_count, ...]
-    
-    seq_excerpt_dancer1 = torch.tensor(np.expand_dims(seq_excerpt_dancer1, axis=0)).to(torch.float32).to(device)
-    seq_excerpt_dancer2 = torch.tensor(np.expand_dims(seq_excerpt_dancer2, axis=0)).to(torch.float32).to(device)
-
+    pose_sequence = torch.tensor(np.expand_dims(pose_sequence, axis=0)).to(device)
     zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32)).to(device)
     
-    skel_sequence_dancer1 = forward_kinematics(seq_excerpt_dancer1, zero_trajectory)
-    skel_sequence_dancer2 = forward_kinematics(seq_excerpt_dancer2, zero_trajectory)
+    skel_sequence = forward_kinematics(pose_sequence, zero_trajectory)
     
-    skel_sequence_dancer1 = skel_sequence_dancer1.detach().cpu().numpy()
-    skel_sequence_dancer1 = np.squeeze(skel_sequence_dancer1)    
+    skel_sequence = skel_sequence.detach().cpu().numpy()
+    skel_sequence = np.squeeze(skel_sequence)    
     
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer1)
-    skel_images_dancer1 = poseRenderer.create_pose_images(skel_sequence_dancer1, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-    skel_images_dancer1[0].save(file_name1, save_all=True, append_images=skel_images_dancer1[1:], optimize=False, duration=33.0, loop=0)
+    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence)
+    skel_images = poseRenderer.create_pose_images(skel_sequence, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
+    skel_images[0].save(file_name, save_all=True, append_images=skel_images[1:], optimize=False, duration=1000.0 / mocap_fps, loop=0)
 
-    skel_sequence_dancer2 = skel_sequence_dancer2.detach().cpu().numpy()
-    skel_sequence_dancer2 = np.squeeze(skel_sequence_dancer2)    
+def export_sequence_bvh(pose_sequence, file_name):
     
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer2)
-    skel_images_dancer2 = poseRenderer.create_pose_images(skel_sequence_dancer2, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-    skel_images_dancer2[0].save(file_name2, save_all=True, append_images=skel_images_dancer2[1:], optimize=False, duration=33.0, loop=0)
+    pose_count = pose_sequence.shape[0]
 
-def create_pred_sequence_anim_dancer1_to_dancer1(mocap_index, pose_index, pose_count, pose_offset, base_pose, file_name):
+    pred_dataset = {}
+    pred_dataset["frame_rate"] = mocap_data["frame_rate"]
+    pred_dataset["rot_sequence"] = mocap_data["rot_sequence"]
+    pred_dataset["skeleton"] = mocap_data["skeleton"]
+    pred_dataset["motion"] = {}
+    pred_dataset["motion"]["pos_local"] = np.repeat(np.expand_dims(pred_dataset["skeleton"]["offsets"], axis=0), pose_count, axis=0)
+    pred_dataset["motion"]["rot_local"] = pose_sequence
+    pred_dataset["motion"]["rot_local_euler"] = mocap_tools.quat_to_euler(pred_dataset["motion"]["rot_local"], pred_dataset["rot_sequence"])
+
+    pred_bvh = mocap_tools.mocap_to_bvh(pred_dataset)
+    
+    bvh_tools.write(pred_bvh, file_name)
+
+def export_sequence_fbx(pose_sequence, file_name):
+    
+    pose_count = pose_sequence.shape[0]
+    
+    pred_dataset = {}
+    pred_dataset["frame_rate"] = mocap_data["frame_rate"]
+    pred_dataset["rot_sequence"] = mocap_data["rot_sequence"]
+    pred_dataset["skeleton"] = mocap_data["skeleton"]
+    pred_dataset["motion"] = {}
+    pred_dataset["motion"]["pos_local"] = np.repeat(np.expand_dims(pred_dataset["skeleton"]["offsets"], axis=0), pose_count, axis=0)
+    pred_dataset["motion"]["rot_local"] = pose_sequence
+    pred_dataset["motion"]["rot_local_euler"] = mocap_tools.quat_to_euler(pred_dataset["motion"]["rot_local"], pred_dataset["rot_sequence"])
+    
+    pred_fbx = mocap_tools.mocap_to_fbx([pred_dataset])
+    
+    fbx_tools.write(pred_fbx, file_name)
+    
+def create_pred_sequence_dancer1(pose_sequence, pose_offset, base_pose):
+    
+    pose_count = pose_sequence.shape[0]
+
+    encoder.eval()
+    decoder1.eval()
+    decoder2.eval()
     
     seq_env = np.hanning(sequence_length)
-    
-    mocap_data_dancer1 = all_mocap_data_dancer1[mocap_index]
-    pose_seq_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    seq_excerpt_dancer1 = pose_seq_dancer1[pose_index:pose_index+pose_count, ...]
 
-    gen_sequence_dancer1 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
+    gen_sequence_dancer1 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose, dtype=np.float32)
     
     for pI in range(0, pose_count - sequence_length, pose_offset):
         
@@ -888,19 +952,19 @@ def create_pred_sequence_anim_dancer1_to_dancer1(mocap_index, pose_index, pose_c
 
         with torch.no_grad():
 
-            encoder_input_dancer1 = seq_excerpt_dancer1[pI:pI+sequence_length]
-            encoder_input_dancer1 = torch.from_numpy(encoder_input_dancer1).to(torch.float32).to(device)
-            encoder_input_dancer1 = torch.reshape(encoder_input_dancer1, (1, sequence_length, pose_dim))
+            encoder_input = pose_sequence[pI:pI+sequence_length]
+            encoder_input = torch.from_numpy(encoder_input).to(torch.float32).to(device)
+            encoder_input = torch.reshape(encoder_input, (1, sequence_length, pose_dim))
 
-            encoder_output_dancer1 = encoder(encoder_input_dancer1)
-            encoder_output_mu_dancer1 = encoder_output_dancer1[0]
-            encoder_output_std_dancer1 = encoder_output_dancer1[1]
-            mu_dancer1 = torch.tanh(encoder_output_mu_dancer1)
-            std_dancer1 = torch.abs(torch.tanh(encoder_output_std_dancer1)) + 0.00001
+            encoder_output = encoder(encoder_input)
+            encoder_output_mu = encoder_output[0]
+            encoder_output_std = encoder_output[1]
+            mu = torch.tanh(encoder_output_mu)
+            std = torch.abs(torch.tanh(encoder_output_std)) + 0.00001
         
-            decoder_input_dancer1 = reparameterize(mu_dancer1, std_dancer1)
+            decoder_input = reparameterize(mu, std)
 
-            pred_seq_dancer1 = decoder1(decoder_input_dancer1)
+            pred_seq_dancer1 = decoder1(decoder_input)
 
             # normalize pred seq
             pred_seq_dancer1 = torch.squeeze(pred_seq_dancer1)
@@ -925,32 +989,24 @@ def create_pred_sequence_anim_dancer1_to_dancer1(mocap_index, pose_index, pose_c
     gen_sequence_dancer1 = gen_sequence_dancer1 / np.linalg.norm(gen_sequence_dancer1, ord=2, axis=1, keepdims=True)
     gen_sequence_dancer1 = gen_sequence_dancer1.reshape((pose_count, joint_count, joint_dim))
     gen_sequence_dancer1 = qfix(gen_sequence_dancer1)
-    gen_sequence_dancer1 = np.expand_dims(gen_sequence_dancer1, axis=0)
-    gen_sequence_dancer1 = torch.from_numpy(gen_sequence_dancer1).to(torch.float32).to(device)
     
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
+    encoder.train()
+    decoder1.train()
+    decoder2.train()
     
-    
-    skel_sequence_dancer1 = forward_kinematics(gen_sequence_dancer1, zero_trajectory)
-    
-    skel_sequence_dancer1 = skel_sequence_dancer1.detach().cpu().numpy()
-    skel_sequence_dancer1 = np.squeeze(skel_sequence_dancer1)
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer1)
-    skel_images_dancer1 = poseRenderer.create_pose_images(skel_sequence_dancer1, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
+    return gen_sequence_dancer1
 
-    skel_images_dancer1[0].save(file_name, save_all=True, append_images=skel_images_dancer1[1:], optimize=False, duration=33.0, loop=0) 
+def create_pred_sequence_dancer2(pose_sequence, pose_offset, base_pose):
+    
+    pose_count = pose_sequence.shape[0]
 
-def create_pred_sequence_anim_dancer2_to_dancer2(mocap_index, pose_index, pose_count, pose_offset, base_pose, file_name):
+    encoder.eval()
+    decoder1.eval()
+    decoder2.eval()
     
     seq_env = np.hanning(sequence_length)
-    
-    mocap_data_dancer2 = all_mocap_data_dancer2[mocap_index]
-    pose_seq_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    seq_excerpt_dancer2 = pose_seq_dancer2[pose_index:pose_index+pose_count, ...]
 
-    gen_sequence_dancer2 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
+    gen_sequence_dancer2 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose, dtype=np.float32)
     
     for pI in range(0, pose_count - sequence_length, pose_offset):
         
@@ -958,19 +1014,19 @@ def create_pred_sequence_anim_dancer2_to_dancer2(mocap_index, pose_index, pose_c
 
         with torch.no_grad():
 
-            encoder_input_dancer2 = seq_excerpt_dancer2[pI:pI+sequence_length]
-            encoder_input_dancer2 = torch.from_numpy(encoder_input_dancer2).to(torch.float32).to(device)
-            encoder_input_dancer2 = torch.reshape(encoder_input_dancer2, (1, sequence_length, pose_dim))
+            encoder_input = pose_sequence[pI:pI+sequence_length]
+            encoder_input = torch.from_numpy(encoder_input).to(torch.float32).to(device)
+            encoder_input = torch.reshape(encoder_input, (1, sequence_length, pose_dim))
 
-            encoder_output_dancer2 = encoder(encoder_input_dancer2)
-            encoder_output_mu_dancer2 = encoder_output_dancer2[0]
-            encoder_output_std_dancer2 = encoder_output_dancer2[1]
-            mu_dancer2 = torch.tanh(encoder_output_mu_dancer2)
-            std_dancer2 = torch.abs(torch.tanh(encoder_output_std_dancer2)) + 0.00001
+            encoder_output = encoder(encoder_input)
+            encoder_output_mu = encoder_output[0]
+            encoder_output_std = encoder_output[1]
+            mu = torch.tanh(encoder_output_mu)
+            std = torch.abs(torch.tanh(encoder_output_std)) + 0.00001
         
-            decoder_input_dancer2 = reparameterize(mu_dancer2, std_dancer2)
+            decoder_input = reparameterize(mu, std)
 
-            pred_seq_dancer2 = decoder2(decoder_input_dancer2)
+            pred_seq_dancer2 = decoder2(decoder_input)
 
             # normalize pred seq
             pred_seq_dancer2 = torch.squeeze(pred_seq_dancer2)
@@ -995,529 +1051,82 @@ def create_pred_sequence_anim_dancer2_to_dancer2(mocap_index, pose_index, pose_c
     gen_sequence_dancer2 = gen_sequence_dancer2 / np.linalg.norm(gen_sequence_dancer2, ord=2, axis=1, keepdims=True)
     gen_sequence_dancer2 = gen_sequence_dancer2.reshape((pose_count, joint_count, joint_dim))
     gen_sequence_dancer2 = qfix(gen_sequence_dancer2)
-    gen_sequence_dancer2 = np.expand_dims(gen_sequence_dancer2, axis=0)
-    gen_sequence_dancer2 = torch.from_numpy(gen_sequence_dancer2).to(torch.float32).to(device)
     
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
+    encoder.train()
+    decoder1.train()
+    decoder2.train()
     
-    
-    skel_sequence_dancer2 = forward_kinematics(gen_sequence_dancer2, zero_trajectory)
-    
-    skel_sequence_dancer2 = skel_sequence_dancer2.detach().cpu().numpy()
-    skel_sequence_dancer2 = np.squeeze(skel_sequence_dancer2)
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer2)
-    skel_images_dancer2 = poseRenderer.create_pose_images(skel_sequence_dancer2, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-
-    skel_images_dancer2[0].save(file_name, save_all=True, append_images=skel_images_dancer2[1:], optimize=False, duration=33.0, loop=0) 
-
-def create_pred_sequence_anim_dancer1_to_dancer2(mocap_index, pose_index, pose_count, pose_offset, base_pose, file_name):
-    
-    seq_env = np.hanning(sequence_length)
-    
-    mocap_data_dancer1 = all_mocap_data_dancer1[mocap_index]
-    pose_seq_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    seq_excerpt_dancer1 = pose_seq_dancer1[pose_index:pose_index+pose_count, ...]
-
-    gen_sequence_dancer2 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
-    
-    for pI in range(0, pose_count - sequence_length, pose_offset):
-        
-        print("pI ", pI, " out of ", (pose_count - sequence_length))
-
-        with torch.no_grad():
-
-            encoder_input_dancer1 = seq_excerpt_dancer1[pI:pI+sequence_length]
-            encoder_input_dancer1 = torch.from_numpy(encoder_input_dancer1).to(torch.float32).to(device)
-            encoder_input_dancer1 = torch.reshape(encoder_input_dancer1, (1, sequence_length, pose_dim))
-
-            encoder_output_dancer1 = encoder(encoder_input_dancer1)
-            encoder_output_mu_dancer1 = encoder_output_dancer1[0]
-            encoder_output_std_dancer1 = encoder_output_dancer1[1]
-            mu_dancer1 = torch.tanh(encoder_output_mu_dancer1)
-            std_dancer1 = torch.abs(torch.tanh(encoder_output_std_dancer1)) + 0.00001
-        
-            decoder_input_dancer1 = reparameterize(mu_dancer1, std_dancer1)
-
-            pred_seq_dancer2 = decoder2(decoder_input_dancer1)
-
-            # normalize pred seq
-            pred_seq_dancer2 = torch.squeeze(pred_seq_dancer2)
-            pred_seq_dancer2 = pred_seq_dancer2.reshape((-1, 4))
-            pred_seq_dancer2 = nn.functional.normalize(pred_seq_dancer2, p=2, dim=1)
-            pred_seq_dancer2 = pred_seq_dancer2.reshape((sequence_length, pose_dim))
-            
-            # blend pred seq into gen seq
-            pred_seq_dancer2 = pred_seq_dancer2.detach().cpu().numpy()
-            pred_seq_dancer2 = np.reshape(pred_seq_dancer2, (-1, joint_count, joint_dim))
-            
-            for si in range(sequence_length):
-                for ji in range(joint_count): 
-                    current_quat = gen_sequence_dancer2[pI + si, ji, :]
-                    target_quat = pred_seq_dancer2[si, ji, :]
-                    quat_mix = seq_env[si]
-                    mix_quat = slerp(current_quat, target_quat, quat_mix )
-                    gen_sequence_dancer2[pI + si, ji, :] = mix_quat
-            
-    # fix quaternions in gen sequence
-    gen_sequence_dancer2 = gen_sequence_dancer2.reshape((-1, 4))
-    gen_sequence_dancer2 = gen_sequence_dancer2 / np.linalg.norm(gen_sequence_dancer2, ord=2, axis=1, keepdims=True)
-    gen_sequence_dancer2 = gen_sequence_dancer2.reshape((pose_count, joint_count, joint_dim))
-    gen_sequence_dancer2 = qfix(gen_sequence_dancer2)
-    gen_sequence_dancer2 = np.expand_dims(gen_sequence_dancer2, axis=0)
-    gen_sequence_dancer2 = torch.from_numpy(gen_sequence_dancer2).to(torch.float32).to(device)
-    
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
-    
-    
-    skel_sequence_dancer2 = forward_kinematics(gen_sequence_dancer2, zero_trajectory)
-    
-    skel_sequence_dancer2 = skel_sequence_dancer2.detach().cpu().numpy()
-    skel_sequence_dancer2 = np.squeeze(skel_sequence_dancer2)
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer2)
-    skel_images_dancer2 = poseRenderer.create_pose_images(skel_sequence_dancer2, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-
-    skel_images_dancer2[0].save(file_name, save_all=True, append_images=skel_images_dancer2[1:], optimize=False, duration=33.0, loop=0) 
-
-def create_pred_sequence_anim_dancer2_to_dancer1(mocap_index, pose_index, pose_count, pose_offset, base_pose, file_name):
-    
-    seq_env = np.hanning(sequence_length)
-    
-    mocap_data_dancer2 = all_mocap_data_dancer2[mocap_index]
-    pose_seq_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    seq_excerpt_dancer2 = pose_seq_dancer2[pose_index:pose_index+pose_count, ...]
-
-    gen_sequence_dancer1 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
-    
-    for pI in range(0, pose_count - sequence_length, pose_offset):
-        
-        print("pI ", pI, " out of ", (pose_count - sequence_length))
-
-        with torch.no_grad():
-
-            encoder_input_dancer2 = seq_excerpt_dancer2[pI:pI+sequence_length]
-            encoder_input_dancer2 = torch.from_numpy(encoder_input_dancer2).to(torch.float32).to(device)
-            encoder_input_dancer2 = torch.reshape(encoder_input_dancer2, (1, sequence_length, pose_dim))
-
-            encoder_output_dancer2 = encoder(encoder_input_dancer2)
-            encoder_output_mu_dancer2 = encoder_output_dancer2[0]
-            encoder_output_std_dancer2 = encoder_output_dancer2[1]
-            mu_dancer2 = torch.tanh(encoder_output_mu_dancer2)
-            std_dancer2 = torch.abs(torch.tanh(encoder_output_std_dancer2)) + 0.00001
-        
-            decoder_input_dancer2 = reparameterize(mu_dancer2, std_dancer2)
-
-            pred_seq_dancer1 = decoder1(decoder_input_dancer2)
-
-            # normalize pred seq
-            pred_seq_dancer1 = torch.squeeze(pred_seq_dancer1)
-            pred_seq_dancer1 = pred_seq_dancer1.reshape((-1, 4))
-            pred_seq_dancer1 = nn.functional.normalize(pred_seq_dancer1, p=2, dim=1)
-            pred_seq_dancer1 = pred_seq_dancer1.reshape((sequence_length, pose_dim))
-            
-            # blend pred seq into gen seq
-            pred_seq_dancer1 = pred_seq_dancer1.detach().cpu().numpy()
-            pred_seq_dancer1 = np.reshape(pred_seq_dancer1, (-1, joint_count, joint_dim))
-            
-            for si in range(sequence_length):
-                for ji in range(joint_count): 
-                    current_quat = gen_sequence_dancer1[pI + si, ji, :]
-                    target_quat = pred_seq_dancer1[si, ji, :]
-                    quat_mix = seq_env[si]
-                    mix_quat = slerp(current_quat, target_quat, quat_mix )
-                    gen_sequence_dancer1[pI + si, ji, :] = mix_quat
-            
-    # fix quaternions in gen sequence
-    gen_sequence_dancer1 = gen_sequence_dancer1.reshape((-1, 4))
-    gen_sequence_dancer1 = gen_sequence_dancer1 / np.linalg.norm(gen_sequence_dancer1, ord=2, axis=1, keepdims=True)
-    gen_sequence_dancer1 = gen_sequence_dancer1.reshape((pose_count, joint_count, joint_dim))
-    gen_sequence_dancer1 = qfix(gen_sequence_dancer1)
-    gen_sequence_dancer1 = np.expand_dims(gen_sequence_dancer1, axis=0)
-    gen_sequence_dancer1 = torch.from_numpy(gen_sequence_dancer1).to(torch.float32).to(device)
-    
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
-    
-    
-    skel_sequence_dancer1 = forward_kinematics(gen_sequence_dancer1, zero_trajectory)
-    
-    skel_sequence_dancer1 = skel_sequence_dancer1.detach().cpu().numpy()
-    skel_sequence_dancer1 = np.squeeze(skel_sequence_dancer1)
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer1)
-    skel_images_dancer1 = poseRenderer.create_pose_images(skel_sequence_dancer1, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-
-    skel_images_dancer1[0].save(file_name, save_all=True, append_images=skel_images_dancer1[1:], optimize=False, duration=33.0, loop=0) 
-
-
-mocap_index = 0
-pose_index = 1000
-pose_count = 1000
-
-create_ref_sequence_anim(mocap_index, pose_index, pose_count, "results/anims/ref_dancer1_mocap_{}_poses_{}-{}.gif".format(mocap_index, pose_index, (pose_index + pose_count)), "results/anims/ref_dancer2_ocap_{}_poses_{}-{}.gif".format(mocap_index, pose_index, (pose_index + pose_count)))
-
-
-base_pose = all_mocap_data_dancer1[0]["motion"]["rot_local"][0]
-pose_offset = 16 # 2 for 8, 32 for 128
-
-
-create_pred_sequence_anim_dancer1_to_dancer1(mocap_index, pose_index, pose_count, pose_offset, base_pose, "results/anims/pred_dancer1_to_dancer1_mocap_{}_poses_{}-{}_epoch_{}.gif".format(mocap_index, pose_index, (pose_index + pose_count), epochs))
-create_pred_sequence_anim_dancer2_to_dancer2(mocap_index, pose_index, pose_count, pose_offset, base_pose, "results/anims/pred_dancer2_to_dancer2_mocap_{}_poses_{}-{}_epoch_{}.gif".format(mocap_index, pose_index, (pose_index + pose_count), epochs))
-create_pred_sequence_anim_dancer1_to_dancer2(mocap_index, pose_index, pose_count, pose_offset, base_pose, "results/anims/pred_dancer1_to_dancer2_mocap_{}_poses_{}-{}_epoch_{}.gif".format(mocap_index, pose_index, (pose_index + pose_count), epochs))
-create_pred_sequence_anim_dancer2_to_dancer1(mocap_index, pose_index, pose_count, pose_offset, base_pose, "results/anims/pred_dancer2_to_dancer1_mocap_{}_poses_{}-{}_epoch_{}.gif".format(mocap_index, pose_index, (pose_index + pose_count), epochs))
-
-# inference with new mocap file (not from training set)
-
-new_mocap_file_path = "E:/Data/mocap/stocos/Duets/Amsterdam_2024/bvh_50hz"
-new_mocap_files = [ [ "Recording3_JS-001_jason.bvh", "Recording3_JS-001_sherise.bvh" ] ]
-new_mocap_valid_frame_ranges = [ [ [ 500, 30800] ] ]
-
-new_mocap_data_dancer1 = []
-new_mocap_data_dancer2 = []
-
-for mocap_file_dancer1, mocap_file_dancer2 in new_mocap_files:
-    
-    print("process file for dancer 1 ", mocap_file_dancer1)
-    
-    bvh_data_dancer1 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer1)
-    mocap_data_dancer1 = mocap_tools.bvh_to_mocap(bvh_data_dancer1)
-    mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
-
-    new_mocap_data_dancer1.append(mocap_data_dancer1)
-
-    print("process file for dancer 2 ", mocap_file_dancer2)
-    
-    bvh_data_dancer2 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer2)
-    mocap_data_dancer2 = mocap_tools.bvh_to_mocap(bvh_data_dancer2)
-    mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
-
-    new_mocap_data_dancer2.append(mocap_data_dancer2)
-
-def create_new_ref_sequence_anim(mocap_index, pose_index, pose_count, file_name1, file_name2):
-    
-    mocap_data_dancer1 = new_mocap_data_dancer1[mocap_index]
-    mocap_data_dancer2 = new_mocap_data_dancer2[mocap_index]
-    
-    pose_seq_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    pose_seq_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    
-    seq_excerpt_dancer1 = pose_seq_dancer1[pose_index:pose_index+pose_count, ...]
-    seq_excerpt_dancer2 = pose_seq_dancer2[pose_index:pose_index+pose_count, ...]
-    
-    seq_excerpt_dancer1 = torch.tensor(np.expand_dims(seq_excerpt_dancer1, axis=0)).to(torch.float32).to(device)
-    seq_excerpt_dancer2 = torch.tensor(np.expand_dims(seq_excerpt_dancer2, axis=0)).to(torch.float32).to(device)
-
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32)).to(device)
-    
-    skel_sequence_dancer1 = forward_kinematics(seq_excerpt_dancer1, zero_trajectory)
-    skel_sequence_dancer2 = forward_kinematics(seq_excerpt_dancer2, zero_trajectory)
-    
-    skel_sequence_dancer1 = skel_sequence_dancer1.detach().cpu().numpy()
-    skel_sequence_dancer1 = np.squeeze(skel_sequence_dancer1)    
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer1)
-    skel_images_dancer1 = poseRenderer.create_pose_images(skel_sequence_dancer1, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-    skel_images_dancer1[0].save(file_name1, save_all=True, append_images=skel_images_dancer1[1:], optimize=False, duration=33.0, loop=0)
-
-    skel_sequence_dancer2 = skel_sequence_dancer2.detach().cpu().numpy()
-    skel_sequence_dancer2 = np.squeeze(skel_sequence_dancer2)    
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer2)
-    skel_images_dancer2 = poseRenderer.create_pose_images(skel_sequence_dancer2, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-    skel_images_dancer2[0].save(file_name2, save_all=True, append_images=skel_images_dancer2[1:], optimize=False, duration=33.0, loop=0)
-
-def create_new_pred_sequence_anim_dancer1_to_dancer1(mocap_index, pose_index, pose_count, pose_offset, base_pose, file_name):
-    
-    seq_env = np.hanning(sequence_length)
-    
-    mocap_data_dancer1 = new_mocap_data_dancer1[mocap_index]
-    pose_seq_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    seq_excerpt_dancer1 = pose_seq_dancer1[pose_index:pose_index+pose_count, ...]
-
-    gen_sequence_dancer1 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
-    
-    for pI in range(0, pose_count - sequence_length, pose_offset):
-        
-        print("pI ", pI, " out of ", (pose_count - sequence_length))
-
-        with torch.no_grad():
-
-            encoder_input_dancer1 = seq_excerpt_dancer1[pI:pI+sequence_length]
-            encoder_input_dancer1 = torch.from_numpy(encoder_input_dancer1).to(torch.float32).to(device)
-            encoder_input_dancer1 = torch.reshape(encoder_input_dancer1, (1, sequence_length, pose_dim))
-
-            encoder_output_dancer1 = encoder(encoder_input_dancer1)
-            encoder_output_mu_dancer1 = encoder_output_dancer1[0]
-            encoder_output_std_dancer1 = encoder_output_dancer1[1]
-            mu_dancer1 = torch.tanh(encoder_output_mu_dancer1)
-            std_dancer1 = torch.abs(torch.tanh(encoder_output_std_dancer1)) + 0.00001
-        
-            decoder_input_dancer1 = reparameterize(mu_dancer1, std_dancer1)
-
-            pred_seq_dancer1 = decoder1(decoder_input_dancer1)
-
-            # normalize pred seq
-            pred_seq_dancer1 = torch.squeeze(pred_seq_dancer1)
-            pred_seq_dancer1 = pred_seq_dancer1.reshape((-1, 4))
-            pred_seq_dancer1 = nn.functional.normalize(pred_seq_dancer1, p=2, dim=1)
-            pred_seq_dancer1 = pred_seq_dancer1.reshape((sequence_length, pose_dim))
-            
-            # blend pred seq into gen seq
-            pred_seq_dancer1 = pred_seq_dancer1.detach().cpu().numpy()
-            pred_seq_dancer1 = np.reshape(pred_seq_dancer1, (-1, joint_count, joint_dim))
-            
-            for si in range(sequence_length):
-                for ji in range(joint_count): 
-                    current_quat = gen_sequence_dancer1[pI + si, ji, :]
-                    target_quat = pred_seq_dancer1[si, ji, :]
-                    quat_mix = seq_env[si]
-                    mix_quat = slerp(current_quat, target_quat, quat_mix )
-                    gen_sequence_dancer1[pI + si, ji, :] = mix_quat
-            
-    # fix quaternions in gen sequence
-    gen_sequence_dancer1 = gen_sequence_dancer1.reshape((-1, 4))
-    gen_sequence_dancer1 = gen_sequence_dancer1 / np.linalg.norm(gen_sequence_dancer1, ord=2, axis=1, keepdims=True)
-    gen_sequence_dancer1 = gen_sequence_dancer1.reshape((pose_count, joint_count, joint_dim))
-    gen_sequence_dancer1 = qfix(gen_sequence_dancer1)
-    gen_sequence_dancer1 = np.expand_dims(gen_sequence_dancer1, axis=0)
-    gen_sequence_dancer1 = torch.from_numpy(gen_sequence_dancer1).to(torch.float32).to(device)
-    
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
-    
-    
-    skel_sequence_dancer1 = forward_kinematics(gen_sequence_dancer1, zero_trajectory)
-    
-    skel_sequence_dancer1 = skel_sequence_dancer1.detach().cpu().numpy()
-    skel_sequence_dancer1 = np.squeeze(skel_sequence_dancer1)
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer1)
-    skel_images_dancer1 = poseRenderer.create_pose_images(skel_sequence_dancer1, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-
-    skel_images_dancer1[0].save(file_name, save_all=True, append_images=skel_images_dancer1[1:], optimize=False, duration=33.0, loop=0) 
-
-def create_new_pred_sequence_anim_dancer2_to_dancer2(mocap_index, pose_index, pose_count, pose_offset, base_pose, file_name):
-    
-    seq_env = np.hanning(sequence_length)
-    
-    mocap_data_dancer2 = new_mocap_data_dancer2[mocap_index]
-    pose_seq_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    seq_excerpt_dancer2 = pose_seq_dancer2[pose_index:pose_index+pose_count, ...]
-
-    gen_sequence_dancer2 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
-    
-    for pI in range(0, pose_count - sequence_length, pose_offset):
-        
-        print("pI ", pI, " out of ", (pose_count - sequence_length))
-
-        with torch.no_grad():
-
-            encoder_input_dancer2 = seq_excerpt_dancer2[pI:pI+sequence_length]
-            encoder_input_dancer2 = torch.from_numpy(encoder_input_dancer2).to(torch.float32).to(device)
-            encoder_input_dancer2 = torch.reshape(encoder_input_dancer2, (1, sequence_length, pose_dim))
-
-            encoder_output_dancer2 = encoder(encoder_input_dancer2)
-            encoder_output_mu_dancer2 = encoder_output_dancer2[0]
-            encoder_output_std_dancer2 = encoder_output_dancer2[1]
-            mu_dancer2 = torch.tanh(encoder_output_mu_dancer2)
-            std_dancer2 = torch.abs(torch.tanh(encoder_output_std_dancer2)) + 0.00001
-        
-            decoder_input_dancer2 = reparameterize(mu_dancer2, std_dancer2)
-
-            pred_seq_dancer2 = decoder2(decoder_input_dancer2)
+    return gen_sequence_dancer2
 
-            # normalize pred seq
-            pred_seq_dancer2 = torch.squeeze(pred_seq_dancer2)
-            pred_seq_dancer2 = pred_seq_dancer2.reshape((-1, 4))
-            pred_seq_dancer2 = nn.functional.normalize(pred_seq_dancer2, p=2, dim=1)
-            pred_seq_dancer2 = pred_seq_dancer2.reshape((sequence_length, pose_dim))
-            
-            # blend pred seq into gen seq
-            pred_seq_dancer2 = pred_seq_dancer2.detach().cpu().numpy()
-            pred_seq_dancer2 = np.reshape(pred_seq_dancer2, (-1, joint_count, joint_dim))
-            
-            for si in range(sequence_length):
-                for ji in range(joint_count): 
-                    current_quat = gen_sequence_dancer2[pI + si, ji, :]
-                    target_quat = pred_seq_dancer2[si, ji, :]
-                    quat_mix = seq_env[si]
-                    mix_quat = slerp(current_quat, target_quat, quat_mix )
-                    gen_sequence_dancer2[pI + si, ji, :] = mix_quat
-            
-    # fix quaternions in gen sequence
-    gen_sequence_dancer2 = gen_sequence_dancer2.reshape((-1, 4))
-    gen_sequence_dancer2 = gen_sequence_dancer2 / np.linalg.norm(gen_sequence_dancer2, ord=2, axis=1, keepdims=True)
-    gen_sequence_dancer2 = gen_sequence_dancer2.reshape((pose_count, joint_count, joint_dim))
-    gen_sequence_dancer2 = qfix(gen_sequence_dancer2)
-    gen_sequence_dancer2 = np.expand_dims(gen_sequence_dancer2, axis=0)
-    gen_sequence_dancer2 = torch.from_numpy(gen_sequence_dancer2).to(torch.float32).to(device)
-    
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
-    
-    
-    skel_sequence_dancer2 = forward_kinematics(gen_sequence_dancer2, zero_trajectory)
-    
-    skel_sequence_dancer2 = skel_sequence_dancer2.detach().cpu().numpy()
-    skel_sequence_dancer2 = np.squeeze(skel_sequence_dancer2)
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer2)
-    skel_images_dancer2 = poseRenderer.create_pose_images(skel_sequence_dancer2, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
+# create original sequences
 
-    skel_images_dancer2[0].save(file_name, save_all=True, append_images=skel_images_dancer2[1:], optimize=False, duration=33.0, loop=0) 
+seq_index = 0
+seq_start = 1000
+seq_length = 1000
 
-def create_new_pred_sequence_anim_dancer1_to_dancer2(mocap_index, pose_index, pose_count, pose_offset, base_pose, file_name):
-    
-    seq_env = np.hanning(sequence_length)
-    
-    mocap_data_dancer1 = new_mocap_data_dancer1[mocap_index]
-    pose_seq_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    seq_excerpt_dancer1 = pose_seq_dancer1[pose_index:pose_index+pose_count, ...]
+orig_sequence_dancer1 = all_mocap_data_dancer1[seq_index]["motion"]["rot_local"].astype(np.float32)
+orig_sequence_dancer2 = all_mocap_data_dancer2[seq_index]["motion"]["rot_local"].astype(np.float32)
 
-    gen_sequence_dancer2 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
-    
-    for pI in range(0, pose_count - sequence_length, pose_offset):
-        
-        print("pI ", pI, " out of ", (pose_count - sequence_length))
+export_sequence_anim(orig_sequence_dancer1[seq_start:seq_start+seq_length], "results/anims/orig_sequence_dancer1_index_{}_seq_start_{}_length_{}.gif".format(seq_index, seq_start, seq_length))
+export_sequence_fbx(orig_sequence_dancer1[seq_start:seq_start+seq_length], "results/anims/orig_sequence_dancer1_index_{}_seq_start_{}_length_{}.fbx".format(seq_index, seq_start, seq_length))
 
-        with torch.no_grad():
+export_sequence_anim(orig_sequence_dancer2[seq_start:seq_start+seq_length], "results/anims/orig_sequence_dancer2_index_{}_seq_start_{}_length_{}.gif".format(seq_index, seq_start, seq_length))
+export_sequence_fbx(orig_sequence_dancer2[seq_start:seq_start+seq_length], "results/anims/orig_sequence_dancer2_index_{}_seq_start_{}_length_{}.fbx".format(seq_index, seq_start, seq_length))
 
-            encoder_input_dancer1 = seq_excerpt_dancer1[pI:pI+sequence_length]
-            encoder_input_dancer1 = torch.from_numpy(encoder_input_dancer1).to(torch.float32).to(device)
-            encoder_input_dancer1 = torch.reshape(encoder_input_dancer1, (1, sequence_length, pose_dim))
 
-            encoder_output_dancer1 = encoder(encoder_input_dancer1)
-            encoder_output_mu_dancer1 = encoder_output_dancer1[0]
-            encoder_output_std_dancer1 = encoder_output_dancer1[1]
-            mu_dancer1 = torch.tanh(encoder_output_mu_dancer1)
-            std_dancer1 = torch.abs(torch.tanh(encoder_output_std_dancer1)) + 0.00001
-        
-            decoder_input_dancer1 = reparameterize(mu_dancer1, std_dancer1)
+# create predicted sequence from dancer 1 to dancer 1
 
-            pred_seq_dancer2 = decoder2(decoder_input_dancer1)
+seq_index = 0
+seq_start = 1000
+seq_length = 1000
+pose_offset = 16
+base_pose = all_mocap_data_dancer1[seq_index]["motion"]["rot_local"][0]
 
-            # normalize pred seq
-            pred_seq_dancer2 = torch.squeeze(pred_seq_dancer2)
-            pred_seq_dancer2 = pred_seq_dancer2.reshape((-1, 4))
-            pred_seq_dancer2 = nn.functional.normalize(pred_seq_dancer2, p=2, dim=1)
-            pred_seq_dancer2 = pred_seq_dancer2.reshape((sequence_length, pose_dim))
-            
-            # blend pred seq into gen seq
-            pred_seq_dancer2 = pred_seq_dancer2.detach().cpu().numpy()
-            pred_seq_dancer2 = np.reshape(pred_seq_dancer2, (-1, joint_count, joint_dim))
-            
-            for si in range(sequence_length):
-                for ji in range(joint_count): 
-                    current_quat = gen_sequence_dancer2[pI + si, ji, :]
-                    target_quat = pred_seq_dancer2[si, ji, :]
-                    quat_mix = seq_env[si]
-                    mix_quat = slerp(current_quat, target_quat, quat_mix )
-                    gen_sequence_dancer2[pI + si, ji, :] = mix_quat
-            
-    # fix quaternions in gen sequence
-    gen_sequence_dancer2 = gen_sequence_dancer2.reshape((-1, 4))
-    gen_sequence_dancer2 = gen_sequence_dancer2 / np.linalg.norm(gen_sequence_dancer2, ord=2, axis=1, keepdims=True)
-    gen_sequence_dancer2 = gen_sequence_dancer2.reshape((pose_count, joint_count, joint_dim))
-    gen_sequence_dancer2 = qfix(gen_sequence_dancer2)
-    gen_sequence_dancer2 = np.expand_dims(gen_sequence_dancer2, axis=0)
-    gen_sequence_dancer2 = torch.from_numpy(gen_sequence_dancer2).to(torch.float32).to(device)
-    
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
-    
-    
-    skel_sequence_dancer2 = forward_kinematics(gen_sequence_dancer2, zero_trajectory)
-    
-    skel_sequence_dancer2 = skel_sequence_dancer2.detach().cpu().numpy()
-    skel_sequence_dancer2 = np.squeeze(skel_sequence_dancer2)
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer2)
-    skel_images_dancer2 = poseRenderer.create_pose_images(skel_sequence_dancer2, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
+orig_sequence_dancer1 = all_mocap_data_dancer1[seq_index]["motion"]["rot_local"].astype(np.float32)
+pred_sequence_dancer1 = create_pred_sequence_dancer1(orig_sequence_dancer1[seq_start:seq_start+seq_length], pose_offset, base_pose)
 
-    skel_images_dancer2[0].save(file_name, save_all=True, append_images=skel_images_dancer2[1:], optimize=False, duration=33.0, loop=0) 
+export_sequence_anim(pred_sequence_dancer1, "results/anims/pred_sequence_dancer1_to_dancer1_epoch_{}_seq_start_{}_length_{}.gif".format(epochs, seq_start, seq_length))
+export_sequence_fbx(pred_sequence_dancer1, "results/anims/pred_sequence_dancer1_to_dancer1_epoch_{}_seq_start_{}_length_{}.fbx".format(epochs, seq_start, seq_length))
 
-def create_new_pred_sequence_anim_dancer2_to_dancer1(mocap_index, pose_index, pose_count, pose_offset, base_pose, file_name):
-    
-    seq_env = np.hanning(sequence_length)
-    
-    mocap_data_dancer2 = new_mocap_data_dancer2[mocap_index]
-    pose_seq_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    seq_excerpt_dancer2 = pose_seq_dancer2[pose_index:pose_index+pose_count, ...]
+# create predicted sequence from dancer 2 to dancer 2
 
-    gen_sequence_dancer1 = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
-    
-    for pI in range(0, pose_count - sequence_length, pose_offset):
-        
-        print("pI ", pI, " out of ", (pose_count - sequence_length))
+seq_index = 0
+seq_start = 1000
+seq_length = 1000
+pose_offset = 16
+base_pose = all_mocap_data_dancer2[seq_index]["motion"]["rot_local"][0]
 
-        with torch.no_grad():
+orig_sequence_dancer2 = all_mocap_data_dancer2[seq_index]["motion"]["rot_local"].astype(np.float32)
+pred_sequence_dancer2 = create_pred_sequence_dancer2(orig_sequence_dancer2[seq_start:seq_start+seq_length], pose_offset, base_pose)
 
-            encoder_input_dancer2 = seq_excerpt_dancer2[pI:pI+sequence_length]
-            encoder_input_dancer2 = torch.from_numpy(encoder_input_dancer2).to(torch.float32).to(device)
-            encoder_input_dancer2 = torch.reshape(encoder_input_dancer2, (1, sequence_length, pose_dim))
+export_sequence_anim(pred_sequence_dancer2, "results/anims/pred_sequence_dancer2_to_dancer2_epoch_{}_seq_start_{}_length_{}.gif".format(epochs, seq_start, seq_length))
+export_sequence_fbx(pred_sequence_dancer2, "results/anims/pred_sequence_dancer2_to_dancer2_epoch_{}_seq_start_{}_length_{}.fbx".format(epochs, seq_start, seq_length))
 
-            encoder_output_dancer2 = encoder(encoder_input_dancer2)
-            encoder_output_mu_dancer2 = encoder_output_dancer2[0]
-            encoder_output_std_dancer2 = encoder_output_dancer2[1]
-            mu_dancer2 = torch.tanh(encoder_output_mu_dancer2)
-            std_dancer2 = torch.abs(torch.tanh(encoder_output_std_dancer2)) + 0.00001
-        
-            decoder_input_dancer2 = reparameterize(mu_dancer2, std_dancer2)
+# create predicted sequence from dancer 1 to dancer 2
 
-            pred_seq_dancer1 = decoder1(decoder_input_dancer2)
+seq_index = 0
+seq_start = 1000
+seq_length = 1000
+pose_offset = 16
+base_pose = all_mocap_data_dancer2[seq_index]["motion"]["rot_local"][0]
 
-            # normalize pred seq
-            pred_seq_dancer1 = torch.squeeze(pred_seq_dancer1)
-            pred_seq_dancer1 = pred_seq_dancer1.reshape((-1, 4))
-            pred_seq_dancer1 = nn.functional.normalize(pred_seq_dancer1, p=2, dim=1)
-            pred_seq_dancer1 = pred_seq_dancer1.reshape((sequence_length, pose_dim))
-            
-            # blend pred seq into gen seq
-            pred_seq_dancer1 = pred_seq_dancer1.detach().cpu().numpy()
-            pred_seq_dancer1 = np.reshape(pred_seq_dancer1, (-1, joint_count, joint_dim))
-            
-            for si in range(sequence_length):
-                for ji in range(joint_count): 
-                    current_quat = gen_sequence_dancer1[pI + si, ji, :]
-                    target_quat = pred_seq_dancer1[si, ji, :]
-                    quat_mix = seq_env[si]
-                    mix_quat = slerp(current_quat, target_quat, quat_mix )
-                    gen_sequence_dancer1[pI + si, ji, :] = mix_quat
-            
-    # fix quaternions in gen sequence
-    gen_sequence_dancer1 = gen_sequence_dancer1.reshape((-1, 4))
-    gen_sequence_dancer1 = gen_sequence_dancer1 / np.linalg.norm(gen_sequence_dancer1, ord=2, axis=1, keepdims=True)
-    gen_sequence_dancer1 = gen_sequence_dancer1.reshape((pose_count, joint_count, joint_dim))
-    gen_sequence_dancer1 = qfix(gen_sequence_dancer1)
-    gen_sequence_dancer1 = np.expand_dims(gen_sequence_dancer1, axis=0)
-    gen_sequence_dancer1 = torch.from_numpy(gen_sequence_dancer1).to(torch.float32).to(device)
-    
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
-    
-    
-    skel_sequence_dancer1 = forward_kinematics(gen_sequence_dancer1, zero_trajectory)
-    
-    skel_sequence_dancer1 = skel_sequence_dancer1.detach().cpu().numpy()
-    skel_sequence_dancer1 = np.squeeze(skel_sequence_dancer1)
-    
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer1)
-    skel_images_dancer1 = poseRenderer.create_pose_images(skel_sequence_dancer1, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
+orig_sequence_dancer1 = all_mocap_data_dancer1[seq_index]["motion"]["rot_local"].astype(np.float32)
+pred_sequence_dancer2 = create_pred_sequence_dancer2(orig_sequence_dancer1[seq_start:seq_start+seq_length], pose_offset, base_pose)
 
-    skel_images_dancer1[0].save(file_name, save_all=True, append_images=skel_images_dancer1[1:], optimize=False, duration=33.0, loop=0) 
+export_sequence_anim(pred_sequence_dancer2, "results/anims/pred_sequence_dancer1_to_dancer2_epoch_{}_seq_start_{}_length_{}.gif".format(epochs, seq_start, seq_length))
+export_sequence_fbx(pred_sequence_dancer2, "results/anims/pred_sequence_dancer1_to_dancer2_epoch_{}_seq_start_{}_length_{}.fbx".format(epochs, seq_start, seq_length))
 
+# create predicted sequence from dancer 2 to dancer 1
 
-new_mocap_index = 0
-new_pose_index = 1000
-new_pose_count = 1000
+seq_index = 0
+seq_start = 1000
+seq_length = 1000
+pose_offset = 16
+base_pose = all_mocap_data_dancer1[seq_index]["motion"]["rot_local"][0]
 
-create_new_ref_sequence_anim(new_mocap_index, new_pose_index, new_pose_count, "results/anims/ref_dancer1_new_mocap_{}_poses_{}-{}.gif".format(new_mocap_index, new_pose_index, (new_pose_index + new_pose_count)), "results/anims/ref_dancer2_new_mocap_{}_poses_{}-{}.gif".format(new_mocap_index, new_pose_index, (new_pose_index + new_pose_count)))
+orig_sequence_dancer2 = all_mocap_data_dancer2[seq_index]["motion"]["rot_local"].astype(np.float32)
+pred_sequence_dancer1 = create_pred_sequence_dancer1(orig_sequence_dancer2[seq_start:seq_start+seq_length], pose_offset, base_pose)
 
+export_sequence_anim(pred_sequence_dancer1, "results/anims/pred_sequence_dancer2_to_dancer1_epoch_{}_seq_start_{}_length_{}.gif".format(epochs, seq_start, seq_length))
+export_sequence_fbx(pred_sequence_dancer1, "results/anims/pred_sequence_dancer2_to_dancer1_epoch_{}_seq_start_{}_length_{}.fbx".format(epochs, seq_start, seq_length))
 
-create_new_pred_sequence_anim_dancer1_to_dancer1(new_mocap_index, new_pose_index, new_pose_count, pose_offset, base_pose, "results/anims/pred_dancer1_to_dancer1_new_mocap_{}_poses_{}-{}_epoch_{}.gif".format(new_mocap_index, new_pose_index, (new_pose_index + new_pose_count), epochs))
-create_new_pred_sequence_anim_dancer2_to_dancer2(new_mocap_index, new_pose_index, new_pose_count, pose_offset, base_pose, "results/anims/pred_dancer2_to_dancer2_new_mocap_{}_poses_{}-{}_epoch_{}.gif".format(new_mocap_index, new_pose_index, (new_pose_index + new_pose_count), epochs))
-create_new_pred_sequence_anim_dancer1_to_dancer2(new_mocap_index, new_pose_index, new_pose_count, pose_offset, base_pose, "results/anims/pred_dancer1_to_dancer2_new_mocap_{}_poses_{}-{}_epoch_{}.gif".format(new_mocap_index, new_pose_index, (new_pose_index + new_pose_count), epochs))
-create_new_pred_sequence_anim_dancer2_to_dancer1(new_mocap_index, new_pose_index, new_pose_count, pose_offset, base_pose, "results/anims/pred_dancer2_to_dancer1_new_mocap_{}_poses_{}-{}_epoch_{}.gif".format(new_mocap_index, new_pose_index, (new_pose_index + new_pose_count), epochs))

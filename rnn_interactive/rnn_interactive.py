@@ -1,5 +1,6 @@
 """
-goes along with dance/dance2dance/rnn/rnn_v2.py
+motion to motion translation
+using a variational autoencoder
 """
 
 import motion_model
@@ -22,8 +23,8 @@ import math
 import pickle
 from time import sleep
 
-from common import utils
 from common import bvh_tools as bvh
+from common import fbx_tools as fbx
 from common import mocap_tools as mocap
 from common.quaternion import qmul, qrot, qnormalize_np, slerp, qfix
 from common.pose_renderer import PoseRenderer
@@ -39,45 +40,55 @@ print('Using {} device'.format(device))
 Mocap Settings
 """
 
-mocap_path = "D:/Data/mocap/stocos/Duets/Amsterdam_2024/bvh_50hz"
-mocap_files = [ "Recording_JS-001_jason.bvh" ]
+mocap_file_path = "D:/Data/mocap/stocos/Duets/Amsterdam_2024/fbx_50hz"
+mocap_files = [ "Jason_Take4.fbx" ]
+mocap_pos_scale = 1.0
+mocap_fps = 50
 
 seq_length = 64
 seq_overlap = 48
-mocap_fps = 50
 
 """
 Load Mocap Data
 """
 
 bvh_tools = bvh.BVH_Tools()
+fbx_tools = fbx.FBX_Tools()
 mocap_tools = mocap.Mocap_Tools()
 
-all_mocap_data = []
+all_mocap_data_dancer1 = []
 
-for mocap_file in mocap_files:
+for mocap_file_dancer1 in mocap_files:
     
-    print("process file ", mocap_file)
+    print("process file ", mocap_file_dancer1)
     
-    bvh_data = bvh_tools.load(mocap_path + "/" + mocap_file)
-    mocap_data = mocap_tools.bvh_to_mocap(bvh_data)
-    mocap_data["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data["motion"]["rot_local_euler"], mocap_data["rot_sequence"])
+    if mocap_file_dancer1.endswith(".bvh") or mocap_file_dancer1.endswith(".BVH"):
+        bvh_data_dancer1 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer1)
+        mocap_data_dancer1 = mocap_tools.bvh_to_mocap(bvh_data_dancer1)
+    elif mocap_file_dancer1.endswith(".fbx") or mocap_file_dancer1.endswith(".FBX"):
+        fbx_data_dancer1 = fbx_tools.load(mocap_file_path + "/" + mocap_file_dancer1)
+        mocap_data_dancer1 = mocap_tools.fbx_to_mocap(fbx_data_dancer1)[0] # first skeleton only
+    
+    mocap_data_dancer1["skeleton"]["offsets"] *= mocap_pos_scale
+    mocap_data_dancer1["motion"]["pos_local"] *= mocap_pos_scale
+    
+    # set x and z offset of root joint to zero
+    mocap_data_dancer1["skeleton"]["offsets"][0, 0] = 0.0 
+    mocap_data_dancer1["skeleton"]["offsets"][0, 2] = 0.0 
+    
+    mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
+    all_mocap_data_dancer1.append(mocap_data_dancer1)
 
-    all_mocap_data.append(mocap_data)
-    
-all_pose_sequences = []
+all_pose_sequences_dancer1 = []
 
-for mocap_data in all_mocap_data:
+for mocap_data_dancer1 in all_mocap_data_dancer1:
     
-    pose_sequence = mocap_data["motion"]["rot_local"].astype(np.float32)
-    all_pose_sequences.append(pose_sequence)
+    pose_sequence_dancer1 = mocap_data_dancer1["motion"]["rot_local"].astype(np.float32)
+    all_pose_sequences_dancer1.append(pose_sequence_dancer1)
 
-joint_count = all_pose_sequences[0].shape[1]
-joint_dim = all_pose_sequences[0].shape[2]
+joint_count = all_pose_sequences_dancer1[0].shape[1]
+joint_dim = all_pose_sequences_dancer1[0].shape[2]
 pose_dim = joint_count * joint_dim
-
-all_pose_sequences[0].shape
-
 
 """
 Load Model
@@ -89,7 +100,7 @@ motion_model.config = {
     "embed_dim": 512,
     "layer_count": 2,
     "device": device,
-    "weights_path": "../rnn/results_rnn_v2/weights/rnn_weights_epoch_100"
+    "weights_path": "../rnn/results_XSens_SheriseJason_Take4/weights/rnn_weights_epoch_200"
     }
 
 model = motion_model.createModel(motion_model.config) 
@@ -100,11 +111,11 @@ Setup Motion Synthesis
 """
 
 synthesis_config  = motion_synthesis.config
-synthesis_config["skeleton"] = all_mocap_data[0]["skeleton"]
+synthesis_config["skeleton"] = all_mocap_data_dancer1[0]["skeleton"]
 synthesis_config["model"] = model
 synthesis_config["seq_window_length"] = seq_length
 synthesis_config["seq_window_overlap"] = seq_overlap
-synthesis_config["orig_sequences"] = all_pose_sequences
+synthesis_config["orig_sequences"] = all_pose_sequences_dancer1
 synthesis_config["orig_seq_index"] = 0
 synthesis_config["device"] = device
 
@@ -147,11 +158,11 @@ app.lastWindowClosed.connect(closeEvent) # myExitHandler is a callable
 OSC Control
 """
 
-motion_control.config["motion_seq"] = pose_sequence
+motion_control.config["motion_seq"] = all_pose_sequences_dancer1[0]
 motion_control.config["synthesis"] = synthesis
 motion_control.config["gui"] = gui
-motion_control.config["ip"] = "127.0.0.1"
-motion_control.config["port"] = 9002
+motion_control.config["ip"] = "0.0.0.0"
+motion_control.config["port"] = 9007
 
 osc_control = motion_control.MotionControl(motion_control.config)
 

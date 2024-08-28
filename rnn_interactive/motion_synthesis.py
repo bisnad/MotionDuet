@@ -250,6 +250,56 @@ class MotionSynthesis():
         
         self.gen_seq = qfix(self.gen_seq)
 
+        """
+        def _blend(self):
+        
+            # roll seq window
+            self.gen_seq = torch.roll(self.gen_seq, -self.seq_window_offset, 0)    
+            # blend overlap region between gen_seq and gen_seq_window
+            #blend_slope = torch.linspace(0.0, ((self.seq_window_overlap - 1) / self.seq_window_overlap), self.seq_window_overlap).unsqueeze(1).repeat(1, self.joint_count).to(self.device)
+            
+            blend_slope = torch.linspace(0.0, 1.0, self.seq_window_overlap).unsqueeze(1).repeat(1, self.joint_count).to(self.device)
+            
+            #print("blend_slope s ", blend_slope.shape)
+            #print("blend_slope ", blend_slope)
+            
+            #print("self.gen_seq s ", self.gen_seq.shape)
+            #print("self.gen_seq_window s ", self.gen_seq_window.shape)
+            
+            self.gen_seq = qfix(self.gen_seq)
+            self.gen_seq_window = qfix(self.gen_seq_window)
+            
+            blend_seq = np.zeros((self.seq_window_overlap, self.joint_count, 4), dtype=np.float32)
+            
+            for fI in range(self.seq_window_overlap):
+    
+                for jI in range(self.joint_count):
+                    
+                    slerp_value = blend_slope[fI, jI].cpu().numpy()
+                    quat1 = self.gen_seq[fI, jI].cpu().numpy()
+                    quat2 = self.gen_seq_window[fI, jI].cpu().numpy()
+                    
+                    #print("fI ", fI, " quat1 ", quat1.shape, " quat2 ", quat2.shape, " slerp_value ", slerp_value.shape)
+                    
+                    quat_blend = slerp(quat1, quat2, slerp_value)
+                    blend_seq[fI, jI] = quat_blend
+                    
+            blend_seq = torch.tensor(blend_seq).to(self.device)
+            blend_seq = blend_seq.reshape(self.seq_window_overlap, self.joint_count, self.joint_dim)
+            
+            #blend_seq = slerp(self.gen_seq[:self.seq_window_overlap].reshape(-1, 4), self.gen_seq_window[:self.seq_window_overlap].reshape(-1, 4), blend_slope.reshape(-1))
+            #blend_seq = blend_seq.reshape(self.seq_window_overlap, self.joint_count, self.joint_dim)
+            #blend_seq = torch.from_numpy(smooth(blend_seq.detach().cpu().numpy(), 5)).to(self.device)
+            blend_seq = nnF.normalize(blend_seq , dim=2)
+            blend_seq = qfix(blend_seq)
+        
+            #print("blend_seq s ", blend_seq.shape)
+    
+            self.gen_seq[:self.seq_window_overlap] = blend_seq
+            self.gen_seq[self.seq_window_overlap:] = torch.clone(self.gen_seq_window[self.seq_window_overlap:])
+            
+            self.gen_seq = qfix(self.gen_seq)
+        """
         
     def _forward_kinematics(self, rotations, root_positions):
         """

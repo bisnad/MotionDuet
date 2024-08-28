@@ -10,7 +10,7 @@
 		}
 ,
 		"classnamespace" : "box",
-		"rect" : [ -951.0, 509.0, 648.0, 283.0 ],
+		"rect" : [ -806.0, 517.0, 620.0, 244.0 ],
 		"bglocked" : 0,
 		"openinpresentation" : 1,
 		"default_fontsize" : 12.0,
@@ -39,6 +39,21 @@
 		"subpatcher_template" : "",
 		"assistshowspatchername" : 0,
 		"boxes" : [ 			{
+				"box" : 				{
+					"id" : "obj-21",
+					"linecount" : 4,
+					"maxclass" : "comment",
+					"numinlets" : 1,
+					"numoutlets" : 0,
+					"patching_rect" : [ 298.0, 96.0, 150.0, 62.0 ],
+					"presentation" : 1,
+					"presentation_linecount" : 2,
+					"presentation_rect" : [ 182.0, 116.0, 193.0, 34.0 ],
+					"text" : "1: from dancer 1 to dancer 2\n2: from dancer 2 to dancer 1"
+				}
+
+			}
+, 			{
 				"box" : 				{
 					"fontname" : "Arial",
 					"fontsize" : 12.0,
@@ -412,7 +427,7 @@
 					"id" : "obj-12",
 					"maxclass" : "number",
 					"maximum" : 20000,
-					"minimum" : 1164,
+					"minimum" : 1200,
 					"numinlets" : 1,
 					"numoutlets" : 2,
 					"outlettype" : [ "", "bang" ],
@@ -973,12 +988,12 @@
 					"outlettype" : [ "", "", "", "" ],
 					"patching_rect" : [ 129.0, 200.0, 53.0, 19.0 ],
 					"restore" : 					{
-						"deep_fake_mode" : [ 2 ],
+						"deep_fake_mode" : [ 1 ],
 						"seq1_index" : [ 0 ],
-						"seq2_index" : [ 0 ],
+						"seq2_index" : [ 1 ],
 						"seq_frame" : [ 1164 ],
 						"seq_range_end_frame" : [ 1200 ],
-						"seq_range_start_frame" : [ 1100 ]
+						"seq_range_start_frame" : [ 1136 ]
 					}
 ,
 					"text" : "autopattr",
@@ -1027,7 +1042,7 @@
 					"numinlets" : 1,
 					"numoutlets" : 0,
 					"patching_rect" : [ 800.5, 81.0, 138.0, 22.0 ],
-					"text" : "udpsend 127.0.0.1 9002"
+					"text" : "udpsend 127.0.0.1 9007"
 				}
 
 			}
@@ -1463,7 +1478,7 @@
  ],
 		"dependency_cache" : [ 			{
 				"name" : "controls.json",
-				"bootpath" : "~/Programming/machine-learning/pyTorch/dance/dance2dance/vae-rnn_interactive/controls",
+				"bootpath" : "~/Projects/Premiere/Software_Git2/MotionDuet/vae-rnn_interactive/controls",
 				"patcherrelativepath" : ".",
 				"type" : "JSON",
 				"implicit" : 1
