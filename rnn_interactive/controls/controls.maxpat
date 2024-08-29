@@ -10,7 +10,7 @@
 		}
 ,
 		"classnamespace" : "box",
-		"rect" : [ 808.0, 333.0, 957.0, 621.0 ],
+		"rect" : [ 808.0, 333.0, 644.0, 252.0 ],
 		"bglocked" : 0,
 		"openinpresentation" : 1,
 		"default_fontsize" : 12.0,
@@ -260,7 +260,7 @@
 					"id" : "obj-12",
 					"maxclass" : "number",
 					"maximum" : 20000,
-					"minimum" : 1164,
+					"minimum" : 64,
 					"numinlets" : 1,
 					"numoutlets" : 2,
 					"outlettype" : [ "", "bang" ],
@@ -331,7 +331,7 @@
 				"box" : 				{
 					"id" : "obj-473",
 					"maxclass" : "number",
-					"maximum" : 1136,
+					"maximum" : 10538,
 					"minimum" : 0,
 					"numinlets" : 1,
 					"numoutlets" : 2,
@@ -834,10 +834,10 @@
 					"outlettype" : [ "", "", "", "" ],
 					"patching_rect" : [ 129.0, 200.0, 53.0, 19.0 ],
 					"restore" : 					{
-						"seq_frame_incr" : [ 512 ],
+						"seq_frame_incr" : [ 48 ],
 						"seq_index" : [ 0 ],
-						"seq_range_end_frame" : [ 1200 ],
-						"seq_range_start_frame" : [ 1100 ]
+						"seq_range_end_frame" : [ 10602 ],
+						"seq_range_start_frame" : [ 0 ]
 					}
 ,
 					"text" : "autopattr",
@@ -886,7 +886,7 @@
 					"numinlets" : 1,
 					"numoutlets" : 0,
 					"patching_rect" : [ 800.5, 81.0, 138.0, 22.0 ],
-					"text" : "udpsend 127.0.0.1 9002"
+					"text" : "udpsend 127.0.0.1 9007"
 				}
 
 			}
@@ -1271,7 +1271,7 @@
  ],
 		"dependency_cache" : [ 			{
 				"name" : "controls.json",
-				"bootpath" : "~/Programming/machine-learning/pyTorch/dance/dance2dance/transformer_encoder_interactive/controls",
+				"bootpath" : "~/Projects/Premiere/Software_Git2/MotionDuet/rnn_interactive/controls",
 				"patcherrelativepath" : ".",
 				"type" : "JSON",
 				"implicit" : 1

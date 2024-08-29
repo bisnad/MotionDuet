@@ -89,7 +89,11 @@ for mocap_file_dancer1, mocap_file_dancer2 in mocap_files:
     mocap_data_dancer1["skeleton"]["offsets"][0, 0] = 0.0 
     mocap_data_dancer1["skeleton"]["offsets"][0, 2] = 0.0 
    
-    mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
+    if mocap_file_dancer1.endswith(".bvh") or mocap_file_dancer1.endswith(".BVH"):
+        mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat_bvh(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
+    elif mocap_file_dancer1.endswith(".fbx") or mocap_file_dancer1.endswith(".FBX"):
+        mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
+
     all_mocap_data_dancer1.append(mocap_data_dancer1)
 
     if mocap_file_dancer2.endswith(".bvh") or mocap_file_dancer2.endswith(".BVH"):
@@ -106,7 +110,10 @@ for mocap_file_dancer1, mocap_file_dancer2 in mocap_files:
     mocap_data_dancer2["skeleton"]["offsets"][0, 0] = 0.0 
     mocap_data_dancer2["skeleton"]["offsets"][0, 2] = 0.0 
     
-    mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
+    if mocap_file_dancer2.endswith(".bvh") or mocap_file_dancer2.endswith(".BVH"):
+        mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat_bvh(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
+    elif mocap_file_dancer2.endswith(".fbx") or mocap_file_dancer2.endswith(".FBX"):
+        mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
 
     all_mocap_data_dancer2.append(mocap_data_dancer2)
     

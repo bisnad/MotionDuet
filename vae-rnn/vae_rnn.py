@@ -161,8 +161,12 @@ for mocap_file_dancer1, mocap_file_dancer2 in mocap_files:
     # set x and z offset of root joint to zero
     mocap_data_dancer1["skeleton"]["offsets"][0, 0] = 0.0 
     mocap_data_dancer1["skeleton"]["offsets"][0, 2] = 0.0 
+    
+    if mocap_file_dancer1.endswith(".bvh") or mocap_file_dancer1.endswith(".BVH"):
+        mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat_bvh(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
+    elif mocap_file_dancer1.endswith(".fbx") or mocap_file_dancer1.endswith(".FBX"):
+        mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
    
-    mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
     all_mocap_data_dancer1.append(mocap_data_dancer1)
 
     print("process file for dancer 2 ", mocap_file_dancer2)
@@ -181,7 +185,10 @@ for mocap_file_dancer1, mocap_file_dancer2 in mocap_files:
     mocap_data_dancer2["skeleton"]["offsets"][0, 0] = 0.0 
     mocap_data_dancer2["skeleton"]["offsets"][0, 2] = 0.0 
     
-    mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
+    if mocap_file_dancer2.endswith(".bvh") or mocap_file_dancer2.endswith(".BVH"):
+        mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat_bvh(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
+    elif mocap_file_dancer2.endswith(".fbx") or mocap_file_dancer2.endswith(".FBX"):
+        mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
 
     all_mocap_data_dancer2.append(mocap_data_dancer2)
 
@@ -834,7 +841,7 @@ def export_sequence_bvh(pose_sequence, file_name):
     pred_dataset["motion"] = {}
     pred_dataset["motion"]["pos_local"] = np.repeat(np.expand_dims(pred_dataset["skeleton"]["offsets"], axis=0), pose_count, axis=0)
     pred_dataset["motion"]["rot_local"] = pose_sequence
-    pred_dataset["motion"]["rot_local_euler"] = mocap_tools.quat_to_euler(pred_dataset["motion"]["rot_local"], pred_dataset["rot_sequence"])
+    pred_dataset["motion"]["rot_local_euler"] = mocap_tools.quat_to_euler_bvh(pred_dataset["motion"]["rot_local"], pred_dataset["rot_sequence"])
 
     pred_bvh = mocap_tools.mocap_to_bvh(pred_dataset)
     
