@@ -145,9 +145,9 @@ motion_model.config = {
     "ae_rnn_bidirectional": ae_rnn_bidirectional,
     "ae_dense_layer_sizes": ae_dense_layer_sizes,
     "device": device,
-    "encoder_weights_path": "../vae-rnn/results_vae_deepfake_XSens_SheriseJason_Take4/weights/encoder_weights_epoch_350",
-    "decoder1_weights_path": "../vae-rnn/results_vae_deepfake_XSens_SheriseJason_Take4/weights/decoder1_weights_epoch_350",
-    "decoder2_weights_path": "../vae-rnn/results_vae_deepfake_XSens_SheriseJason_Take4/weights/decoder2_weights_epoch_350"
+    "encoder_weights_path": "../vae-rnn/results_vae_deepfake_XSens_SheriseJason_Take4/weights/encoder_weights_epoch_600",
+    "decoder1_weights_path": "../vae-rnn/results_vae_deepfake_XSens_SheriseJason_Take4/weights/decoder1_weights_epoch_600",
+    "decoder2_weights_path": "../vae-rnn/results_vae_deepfake_XSens_SheriseJason_Take4/weights/decoder2_weights_epoch_600"
     }
 
 encoder, decoder1, decoder2 = motion_model.createModel(motion_model.config) 
