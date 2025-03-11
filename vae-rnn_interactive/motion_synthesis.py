@@ -158,6 +158,9 @@ class MotionSynthesis():
 
         self.gen_seq_window = None
         
+        self.orig_pose_wpos = None
+        self.orig_pose_wrot = None
+        
         self.synth_pose_wpos = None
         self.synth_pose_wrot = None
         
@@ -242,15 +245,34 @@ class MotionSynthesis():
 
             #print("self.seq_update_index ", self.seq_update_index)
             
-            # generate next skel pose
+            # generate skel poses
+            zero_trajectory = torch.tensor(np.zeros((1, 1, 3), dtype=np.float32))
+            zero_trajectory = zero_trajectory.to(self.device)
+            
+            # generate orig skel pose
+            if self.deep_fake_mode == 1:
+                orig_pose = self.orig_seq1[self.orig_seq_frame_index + self.seq_update_index, ...]
+            else:
+                orig_pose = self.orig_seq2[self.orig_seq_frame_index + self.seq_update_index, ...]
+                
+            orig_pose = torch.from_numpy(orig_pose).to(self.device)
+            orig_pose = orig_pose.reshape((1, self.joint_count, self.joint_dim))
+            
+            self.orig_pose_wpos, self.orig_pose_wrot = self._forward_kinematics(torch.unsqueeze(orig_pose,dim=0), zero_trajectory)
+            
+            self.orig_pose_wpos = self.orig_pose_wpos.detach().cpu().numpy()
+            self.orig_pose_wpos = self.orig_pose_wpos.reshape((self.joint_count, 3))
+            
+            self.orig_pose_wrot = self.orig_pose_wrot.detach().cpu().numpy()
+            self.orig_pose_wrot = self.orig_pose_wrot.reshape((self.joint_count, 4))
+  
+            
+            # generate synth skel pose
             pred_pose = self.gen_seq[self.seq_update_index, ...]
     
             pred_pose = pred_pose.reshape((-1, 4))
             pred_pose = nn.functional.normalize(pred_pose, p=2, dim=1)
             pred_pose = pred_pose.reshape((1, self.joint_count, self.joint_dim))
-            
-            zero_trajectory = torch.tensor(np.zeros((1, 1, 3), dtype=np.float32))
-            zero_trajectory = zero_trajectory.to(self.device)
             
             self.synth_pose_wpos, self.synth_pose_wrot = self._forward_kinematics(torch.unsqueeze(pred_pose,dim=0), zero_trajectory)
             

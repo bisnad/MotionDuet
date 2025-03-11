@@ -15,6 +15,7 @@ import scipy.linalg as sclinalg
 import os, sys, time, subprocess
 import numpy as np
 import math
+import json
 
 from common import utils
 from common import bvh_tools as bvh
@@ -36,21 +37,14 @@ Mocap Settings
 
 # important: the skeleton needs to be identical in all mocap recordings
 
-mocap_file_path = "D:/Data/mocap/stocos/Duets/Amsterdam_2024/fbx_50hz"
+# Example: XSens Mocap Recording
+mocap_file_path = "../../../Data/Mocap/XSens/Stocos/Duets/fbx_50hz"
 mocap_files = [ [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ] ]
 mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
 mocap_pos_scale = 1.0
 mocap_fps = 50
+mocap_loss_weights_file = None
 
-
-"""
-# debug
-mocap_file_path = "D:/Data/mocap/Daniel/Zed/fbx/"
-mocap_files = [ [ "daniel_zed_solo1.fbx", "daniel_zed_solo1.fbx" ] ]
-mocap_valid_frame_ranges = [ [ [ 0, 9100 ] ] ]
-mocap_pos_scale = 1.0
-mocap_fps = 30
-"""
 
 """
 Model Settings
@@ -61,7 +55,7 @@ rnn_layer_count = 2
 
 save_weights = True
 load_weights = False
-rnn_weights_file = "results_JasonSherise_Take4/weights/rnn_weights_epoch_100"
+rnn_weights_file = "results/weights/rnn_weights_epoch_100"
 
 """
 Training settings
@@ -77,50 +71,6 @@ quat_loss_scale = 0.9
 model_save_interval = 10
 epochs = 200
 save_history = True
-
-"""
-# zed body34 specific joint loss weights
-# todo: this information should be stored in config files
-joint_loss_weights = [
-    1.0, # PELVIS
-    1.0, # NAVAL SPINE
-    1.0, # CHEST SPINE
-    1.0, # RIGHT CLAVICLE
-    1.0, # RIGHT SHOULDER
-    1.0, # RIGHT ELBOW
-    1.0, # RIGHT WRIST
-    1.0, # RIGHT HAND
-    0.1, # RIGHT HANDTIP
-    0.1, # RIGHT THUMB
-    1.0, # NECK
-    1.0, # HEAD
-    0.1, # NOSE
-    0.1, # LEFT EYE
-    0.1, # LEFT EAR
-    0.1, # RIGHT EYE
-    0.1, # RIGHT EAR
-    1.0, # LEFT CLAVICLE
-    1.0, # LEFT SHOULDER
-    1.0, # LEFT ELBOW
-    1.0, # LEFT WRIST
-    1.0, # LEFT HAND
-    0.1, # LEFT HANDTIP
-    0.1, # LEFT THUMB
-    1.0, # LEFT HIP
-    1.0, # LEFT KNEE
-    1.0, # LEFT ANKLE
-    1.0, # LEFT FOOT
-    1.0, # LEFT HEEL
-    1.0, # RIGHT HIP
-    1.0, # RIGHT KNEE
-    1.0, # RIGHT ANKLE
-    1.0, # RIGHT FOOT
-    1.0 # RIGHT HEEL
-    ]
-"""
-
-joint_loss_weights = [ 1.0 ] # assign individual weights to joints if not all the weights are identical
-
 
 """
 Visualization settings
@@ -211,6 +161,16 @@ def get_edge_list(children):
     return edge_list
 
 edge_list = get_edge_list(children)
+
+# set joint loss weigths 
+
+if mocap_loss_weights_file is not None:
+    with open(mocap_loss_weights_file) as f:
+        joint_loss_weights = json.load(f)
+        joint_loss_weights = joint_loss_weights["joint_loss_weights"]
+else:
+    joint_loss_weights = [1.0]
+    joint_loss_weights *= joint_count
 
 """
 Create Dataset
@@ -356,10 +316,6 @@ Training
 
 optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.1) # reduce the learning every 20 epochs by a factor of 10
-
-# extend joint loss array if necessary
-if len(joint_loss_weights) == 1:
-    joint_loss_weights *= joint_count
 
 joint_loss_weights = torch.tensor(joint_loss_weights, dtype=torch.float32)
 joint_loss_weights = joint_loss_weights.reshape(1, 1, -1).to(device)

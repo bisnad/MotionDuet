@@ -41,7 +41,7 @@ print('Using {} device'.format(device))
 Mocap Settings
 """
 
-mocap_file_path = "D:/Data/mocap/stocos/Duets/Amsterdam_2024/fbx_50hz"
+mocap_file_path = "../../../Data/Mocap/XSens/Stocos/Duets/fbx_50hz"
 mocap_files = [ [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ] ]
 mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
 mocap_pos_scale = 1.0

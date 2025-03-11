@@ -11,6 +11,7 @@ from collections import OrderedDict
 
 import os, sys, time, subprocess
 import numpy as np
+import json
 
 from common import utils
 from common import bvh_tools as bvh
@@ -38,6 +39,7 @@ mocap_files = [ [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ] ]
 mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
 mocap_pos_scale = 1.0
 mocap_fps = 50
+mocap_loss_weights_file = None
 
 """
 Model Settings
@@ -80,49 +82,6 @@ max_kld_scale = 0.1
 epochs = 600
 model_save_interval = 50
 save_history = True
-
-"""
-# zed body34 specific joint loss weights
-# todo: this information should be stored in config files
-joint_loss_weights = [
-    1.0, # PELVIS
-    1.0, # NAVAL SPINE
-    1.0, # CHEST SPINE
-    1.0, # RIGHT CLAVICLE
-    1.0, # RIGHT SHOULDER
-    1.0, # RIGHT ELBOW
-    1.0, # RIGHT WRIST
-    1.0, # RIGHT HAND
-    0.1, # RIGHT HANDTIP
-    0.1, # RIGHT THUMB
-    1.0, # NECK
-    1.0, # HEAD
-    0.1, # NOSE
-    0.1, # LEFT EYE
-    0.1, # LEFT EAR
-    0.1, # RIGHT EYE
-    0.1, # RIGHT EAR
-    1.0, # LEFT CLAVICLE
-    1.0, # LEFT SHOULDER
-    1.0, # LEFT ELBOW
-    1.0, # LEFT WRIST
-    1.0, # LEFT HAND
-    0.1, # LEFT HANDTIP
-    0.1, # LEFT THUMB
-    1.0, # LEFT HIP
-    1.0, # LEFT KNEE
-    1.0, # LEFT ANKLE
-    1.0, # LEFT FOOT
-    1.0, # LEFT HEEL
-    1.0, # RIGHT HIP
-    1.0, # RIGHT KNEE
-    1.0, # RIGHT ANKLE
-    1.0, # RIGHT FOOT
-    1.0 # RIGHT HEEL
-    ]
-"""
-
-joint_loss_weights = [ 1.0 ] # assign individual weights to joints if not all the weights are identical
 
 """
 Visualization settings
@@ -214,6 +173,16 @@ def get_edge_list(children):
     return edge_list
 
 edge_list = get_edge_list(children)
+
+# set joint loss weigths 
+
+if mocap_loss_weights_file is not None:
+    with open(mocap_loss_weights_file) as f:
+        joint_loss_weights = json.load(f)
+        joint_loss_weights = joint_loss_weights["joint_loss_weights"]
+else:
+    joint_loss_weights = [1.0]
+    joint_loss_weights *= joint_count
 
 """
 Create Dataset
@@ -499,10 +468,6 @@ kld_scales = calc_kld_scales()
 
 ae_optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=ae_learning_rate)
 ae_scheduler = torch.optim.lr_scheduler.StepLR(ae_optimizer, step_size=100, gamma=0.316) # reduce the learning every 100 epochs by a factor of 10
-
-# extend joint loss array if necessary
-if len(joint_loss_weights) == 1:
-    joint_loss_weights *= joint_count
 
 joint_loss_weights = torch.tensor(joint_loss_weights, dtype=torch.float32)
 joint_loss_weights = joint_loss_weights.reshape(1, 1, -1).to(device)

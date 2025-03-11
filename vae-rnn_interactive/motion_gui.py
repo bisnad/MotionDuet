@@ -45,14 +45,23 @@ class MotionGui(QtWidgets.QWidget):
         self.view_line_width = config["view_line_width"]
         
         # dynamic canvas
-        self.pose_canvas = gl.GLViewWidget()
-        self.pose_canvas_lines = gl.GLLinePlotItem()
-        self.pose_canvas_points = gl.GLScatterPlotItem()
-        self.pose_canvas.addItem(self.pose_canvas_lines)
-        self.pose_canvas.addItem(self.pose_canvas_points)
-        self.pose_canvas.setCameraParams(distance=self.view_dist)
-        self.pose_canvas.setCameraParams(azimuth=self.view_azi)
-        self.pose_canvas.setCameraParams(elevation=self.view_ele)
+        self.orig_pose_canvas = gl.GLViewWidget()
+        self.orig_pose_canvas_lines = gl.GLLinePlotItem()
+        self.orig_pose_canvas_points = gl.GLScatterPlotItem()
+        self.orig_pose_canvas.addItem(self.orig_pose_canvas_lines)
+        self.orig_pose_canvas.addItem(self.orig_pose_canvas_points)
+        self.orig_pose_canvas.setCameraParams(distance=self.view_dist)
+        self.orig_pose_canvas.setCameraParams(azimuth=self.view_azi)
+        self.orig_pose_canvas.setCameraParams(elevation=self.view_ele)
+        
+        self.synth_pose_canvas = gl.GLViewWidget()
+        self.synth_pose_canvas_lines = gl.GLLinePlotItem()
+        self.synth_pose_canvas_points = gl.GLScatterPlotItem()
+        self.synth_pose_canvas.addItem(self.synth_pose_canvas_lines)
+        self.synth_pose_canvas.addItem(self.synth_pose_canvas_points)
+        self.synth_pose_canvas.setCameraParams(distance=self.view_dist)
+        self.synth_pose_canvas.setCameraParams(azimuth=self.view_azi)
+        self.synth_pose_canvas.setCameraParams(elevation=self.view_ele)
 
         self.q_start_buttom = QtWidgets.QPushButton("start", self)
         self.q_start_buttom.clicked.connect(self.start)  
@@ -65,16 +74,18 @@ class MotionGui(QtWidgets.QWidget):
         self.q_button_grid.addWidget(self.q_stop_buttom,0,1)
 
         self.q_grid = QtWidgets.QGridLayout()
-        self.q_grid.addWidget(self.pose_canvas,0,0)
+        self.q_grid.addWidget(self.orig_pose_canvas,0,0)
+        self.q_grid.addWidget(self.synth_pose_canvas,0,1)
         self.q_grid.addLayout(self.q_button_grid,1,0)
         
         self.q_grid.setRowStretch(0, 0)
+        self.q_grid.setRowStretch(0, 1)
         self.q_grid.setRowStretch(1, 0)
         
         self.setLayout(self.q_grid)
 
-        self.setGeometry(50,50,512,612)
-        self.setWindowTitle("Motion Duet - Transformer Encoder")
+        self.setGeometry(50,50,1024,612)
+        self.setWindowTitle("Motion Duet - VAE Deep Fake")
         
     def start(self):
         self.pose_thread_event = Event()
@@ -104,11 +115,15 @@ class MotionGui(QtWidgets.QWidget):
             
             #sleep(self.pose_thread_interval)
             sleep(next_update_interval)
-
+            
             
     def update_pred_seq(self):
         
         self.synthesis.update()       
+        
+        self.orig_pose_wpos = self.synthesis.orig_pose_wpos
+        self.orig_pose_wrot = self.synthesis.orig_pose_wrot
+        
         self.synth_pose_wpos = self.synthesis.synth_pose_wpos
         self.synth_pose_wrot = self.synthesis.synth_pose_wrot
         
@@ -133,15 +148,19 @@ class MotionGui(QtWidgets.QWidget):
 
     def update_seq_plot(self):
         
-        pose = self.synth_pose_wpos
+        orig_pose = self.orig_pose_wpos
 
-        points_data = pose
-        lines_data = pose[np.array(self.edges).flatten()]
+        orig_points_data = orig_pose
+        orig_lines_data = orig_pose[np.array(self.edges).flatten()]
         
-        self.pose_canvas_lines.setData(pos=lines_data, mode="lines", color=(1.0, 1.0, 1.0, 0.5), width=self.view_line_width)
-        #self.pose_canvas_lines.setData(pos=lines_data, mode="lines", color=(0.0, 0.0, 0.0, 1.0), width=self.view_line_width)
-        #self.pose_canvas_points.setData(pos=pose, color=(1.0, 1.0, 1.0, 1.0))
+        self.orig_pose_canvas_lines.setData(pos=orig_lines_data, mode="lines", color=(0.0, 1.0, 0.0, 0.5), width=self.view_line_width)
+        self.orig_pose_canvas_points.setData(pos=orig_pose, color=(0.0, 1.0, 0.0, 0.5))
+        
+        
+        synth_pose = self.synth_pose_wpos
 
-        #self.pose_canvas.show()
+        synth_points_data = synth_pose
+        synth_lines_data = synth_pose[np.array(self.edges).flatten()]
         
-        #print(self.pose_canvas.cameraParams())
+        self.synth_pose_canvas_lines.setData(pos=synth_lines_data, mode="lines", color=(1.0, 0.0, 1.0, 0.5), width=self.view_line_width)
+        self.synth_pose_canvas_points.setData(pos=synth_pose, color=(1.0, 0.0, 0.0, 0.5))

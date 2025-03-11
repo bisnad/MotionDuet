@@ -40,13 +40,41 @@ print('Using {} device'.format(device))
 Mocap Settings
 """
 
-mocap_file_path = "D:/Data/mocap/stocos/Duets/Amsterdam_2024/fbx_50hz"
+# Example: XSens Mocap Recording
+mocap_file_path = "../../../Data/Mocap/XSens/Stocos/Duets/fbx_50hz"
 mocap_files = [ "Jason_Take4.fbx" ]
+mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
 mocap_pos_scale = 1.0
 mocap_fps = 50
 
-seq_length = 64
-seq_overlap = 48
+"""
+Model Settings
+"""
+
+sequence_length = 64
+rnn_layer_dim = 512
+rnn_layer_count = 2
+
+"""
+Training Settings
+"""
+
+# Example: XSens Mocap Recording
+rnn_weights_file = "../rnn/results_XSens_SheriseJason_Take4/weights/rnn_weights_epoch_200"
+
+"""
+OSC Settings
+"""
+
+osc_send_ip = "127.0.0.1"
+osc_send_port = 9004
+
+osc_receive_ip = "0.0.0.0"
+osc_receive_port = 9002
+
+
+
+
 
 """
 Load Mocap Data
@@ -98,14 +126,12 @@ pose_dim = joint_count * joint_dim
 Load Model
 """
 
-motion_model.config = {
-    "seq_length": seq_length,
-    "data_dim": pose_dim,
-    "embed_dim": 512,
-    "layer_count": 2,
-    "device": device,
-    "weights_path": "../rnn/results_XSens_SheriseJason_Take4/weights/rnn_weights_epoch_200"
-    }
+motion_model.config["seq_length"] = sequence_length
+motion_model.config["data_dim"] = pose_dim
+motion_model.config["embed_dim"] = rnn_layer_dim
+motion_model.config["layer_count"] = rnn_layer_count
+motion_model.config["device"] = device
+motion_model.config["weights_path"] = rnn_weights_file
 
 model = motion_model.createModel(motion_model.config) 
 
@@ -114,11 +140,13 @@ model = motion_model.createModel(motion_model.config)
 Setup Motion Synthesis
 """
 
+sequence_overlap = sequence_length // 4 * 3
+
 synthesis_config  = motion_synthesis.config
 synthesis_config["skeleton"] = all_mocap_data_dancer1[0]["skeleton"]
 synthesis_config["model"] = model
-synthesis_config["seq_window_length"] = seq_length
-synthesis_config["seq_window_overlap"] = seq_overlap
+synthesis_config["seq_window_length"] = sequence_length
+synthesis_config["seq_window_overlap"] = sequence_overlap
 synthesis_config["orig_sequences"] = all_pose_sequences_dancer1
 synthesis_config["orig_seq_index"] = 0
 synthesis_config["device"] = device
@@ -130,8 +158,8 @@ synthesis = motion_synthesis.MotionSynthesis(synthesis_config)
 OSC Sender
 """
 
-motion_sender.config["ip"] = "127.0.0.1"
-motion_sender.config["port"] = 9005
+motion_sender.config["ip"] = osc_send_ip
+motion_sender.config["port"] = osc_send_port
 
 osc_sender = motion_sender.OscSender(motion_sender.config)
 
@@ -165,8 +193,8 @@ OSC Control
 motion_control.config["motion_seq"] = all_pose_sequences_dancer1[0]
 motion_control.config["synthesis"] = synthesis
 motion_control.config["gui"] = gui
-motion_control.config["ip"] = "0.0.0.0"
-motion_control.config["port"] = 9007
+motion_control.config["ip"] = osc_receive_ip
+motion_control.config["port"] = osc_receive_port
 
 osc_control = motion_control.MotionControl(motion_control.config)
 
@@ -177,6 +205,5 @@ Start Application
 osc_control.start()
 gui.show()
 app.exec_()
-
 
 osc_control.stop()

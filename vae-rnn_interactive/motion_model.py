@@ -169,4 +169,8 @@ def createModel(config):
         else:
             decoder2.load_state_dict(torch.load(config["decoder2_weights_path"], map_location=torch.device('cpu')))
         
+    encoder.eval()
+    decoder1.eval()
+    decoder2.eval()
+
     return encoder, decoder1, decoder2
