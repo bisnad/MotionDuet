@@ -12,7 +12,7 @@ This Python-based tool can be used to interactively control a motion translation
 
 The software runs within the *premiere* anaconda environment. For this reason, this environment has to be setup beforehand.  Instructions how to setup the *premiere* environment are available as part of the [installation documentation ](https://github.com/bisnad/AIToolbox/tree/main/Installers) in the [AI Toolbox github repository](https://github.com/bisnad/AIToolbox). 
 
-The software can be downloaded by cloning the [MotionDuet repository](..). After cloning, the software is located in the MotionContinuation / rnn_interactive directory.
+The software can be downloaded by cloning the [MotionDuet repository](..). After cloning, the software is located in the MotionDuet / rnn_interactive directory.
 
 ### Directory Structure
 
@@ -33,17 +33,17 @@ The tool can be started either by double clicking the `rnn_interactive.bat` (Win
 
 ```
 conda activate premiere
-cd MotionContinuation/rnn_interactive
+cd MotionDuet/rnn_interactive
 python rnn_interactive.py
 ```
 
 ##### Motion Data and Weights Import
 
-During startup, the tool loads one or several mocap capture files and the model weights from a previous training run. By default, the tool loads these files from an example training run whose results are stored in the local data/results folder.  This training run is based on a XSens recording of a solo improvisation. The model was trained on this data to predict the motion continuation given a short initial motion as input. To load a different training run, the following source code has to be modified in the file `rnn_interactive.py.` 
+During startup, the tool loads one or several motion capture files and the model weights from a previous training run. The motion capture files are those of the first dancer in a Duet.  By default, the tool loads these files from an example training run whose results are stored in the local data/results folder.  This training run is based on a XSens recording of a Duet improvisation. The model was trained on this data to predict the motion of the second dancer based on the motion of the first dancer. To load a different training run, the following source code has to be modified in the file `rnn_interactive.py.` 
 
 ```
 mocap_file_path = "data/mocap"
-mocap_files = ["Muriel_Embodied_Machine_variation.fbx"]
+mocap_files = [ "Jason_Take4.fbx" ]
 mocap_pos_scale = 1.0
 mocap_fps = 50
 
@@ -66,22 +66,21 @@ The integer value assigned to the variable `sequence_length` specifies the lengt
 
 #### Functionality
 
-At the beginning, the tool passes a short motion sequence from one of the motion capture files that are loaded during startup as input into the motion continuation model. From then on, the model creates synthetic motions in real-time that continue the initial motion sequence. The procedure for creating synthetic motions is as follows: the model takes the current motion sequence as input and predicts a single frame as continuation of the motion sequence, it then removes the first frame from the current motion sequence and appends the predicted frame to the current motion sequence. This procedure continues until the tool is stopped. While running, the behaviour of the tool can be controlled by sending it OSC messages. The tool also outputs the predicted frames as OSC messages. 
+While the tool is running, it continuously extracts a short short motion sequence from one of the motion capture files of the first dancer that are loaded during startup. The short motion sequence in then passed as input into the motion continuation model. Using this input, the model creates synthetic motions for the second dancer in real-time.  As time progresses, the tool increments the frame index from which the input motion sequence is extracted. This frame index changes within the limits of a user specified frame range. When the frame index exceeds the upper end of the corresponding frame range, the frame index wraps around to the lower end of the frame range.  This procedure continues until the tool is stopped. While running, the behaviour of the tool can be controlled by sending it OSC messages. The tool also outputs the predicted frames as OSC messages. 
 
 ### Graphical User Interface
 
-The tool provides a minimal GUI  for starting and stopping the motion continuation and for displaying the generated motions as a simple 3D stick figure (see Figure 1 left side).
+The tool provides a minimal GUI  for starting and stopping the motion continuation and for displaying both the original motions of the first dancer and the generated motions of the second dancer as simple 3D stick figure (see Figure 1 left side).
 
 ### OSC Communication
 
-The tool receives OSC messages that modify its behaviour. Some OSC messages initialise the model with a new input motion sequence. Other OSC messages alter the rotations of a single joint in the input motion sequence. Initialising the model with a new input motion sequence drastically changes the predicted motion continuation. Altering the rotation of a single joint only slightly influences the predicted motion continuation. 
+The tool receives OSC messages that modify its behaviour. These OSC messages either change the frame index, frame range, or offset that is being used when extraction motion sequences of the first dancer as input for the model. 
 
 The following OSC messages are received by the tool:
 
-- Specifies by index the motion capture file from which a new input motion sequence is extract to initialise the model : `/mocap/seqindex <integer index>`
-- Specifies by index the end frame within the current motion capture file which a new input motion sequence is extract to initialise the model : `/mocap/seqinput <integer index>`
-- Specifies by index and quaternion value a joint whose rotation is overwritten in the input motion sequence : /mocap/setjointrot `<integer index>  <float rotw> <float rotx> <float roty> <float rotz>`
-- Specifies by index and quaternion value a joint to which a rotation is added in the input motion sequence : /mocap/changejointrot`<integer index>  <float rotw> <float rotx> <float roty> <float rotz>`
+- Specifies by index the motion capture file of the first dancer from which a new input motion sequence is extract to initialise the model : `/mocap/seqindex <integer index>`
+- Specifies by start and end frame index of a frame region within the motion capture file from which motion excerpts are extracted  : `/mocap/seqframerange <integer frame_index_start> <integer frame_index_end> `
+- Specifies the offset in number of frames by which the frame position at which motion excerpts from the motion capture file are extracted are incremented in successive extraction steps: `/mocap/seqframeincr <integer frame_offset>`
 
 By default, the tool receives OSC messages from any IP address and on port 9002. To change the IP address and/or port, the following code in the file `rnn_interactive.py` has to be changed:
 
@@ -92,8 +91,6 @@ osc_receive_port = 9002
 
 The string value assigned to the variable  `osc_receive_ip` specifies the IP address of the computer from which the tool receives OSC messages. "0.0.0.0" represents any IP address. The integer value assigned to the variable `osc_receive_port` specifies the port on which the tool receives OSC messages.
 
-
-
 The software sends the following OSC messages representing the joint positions and rotations of the currently predicted motion frame.
 Each message contains all the joint positions and rotations grouped together. In the OSC messages described below, N represents the number of joints.
 
@@ -101,7 +98,6 @@ The following OSC messages are sent by the software:
 
 - joint positions as list of 3D vectors in world coordinates: `/mocap/0/joint/pos_world <float j1x> <float j1y> <float j1z> .... <float jNx> <float jNy> <float jNz>` 
 - joint rotations as list of Quaternions in world coordinates: `/mocap/0/joint/rot_world <float j1w> <float j1x> <float j1y> <float j1z> .... <float jNw> <float jNx> <float jNy> <float jNz>` 
-- joint rotations as list of Quaternions relative to parent joint: `/mocap/0/joint/rot_local <float j1w> <float j1x> <float j1y> <float j1z> .... <float jNw> <float jNx> <float jNy> <float jNz>` 
 
 By default, the tool sends OSC messages to IP address "127.0.0.1" and to port 9004. To change the IP address and/or port, the following code in the file `rnn_interactive.py` has to be changed:
 
