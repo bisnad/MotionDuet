@@ -54,7 +54,7 @@ The string value assigned to the variable `mocap_file_path` specifies the path t
 
 ##### Model Settings
 
-The model consists of one or several [Long Short Term Memory](https://www.researchgate.net/publication/13853244_Long_Short-Term_Memory) (LSTM) layers. By default, there are 2 layers and 512 units per layer. Also, by default, the model takes as input a motion sequence that is 64 frames long.  These settings need to be identical to the ones used when training the motion continuation model. To use different model settings and/or a different length for the input motion sequence, the the following source code in the file `rnn_interactive.py` has to be modified:
+The model consists of one or several [Long Short Term Memory](https://www.researchgate.net/publication/13853244_Long_Short-Term_Memory) (LSTM) layers. By default, there are 2 layers and 512 units per layer. Also, by default, the model takes as input a motion sequence that is 64 frames long.  These settings need to be identical to the ones used when training the motion translation model. To use different model settings and/or a different length for the input motion sequence, the the following source code in the file `rnn_interactive.py` has to be modified:
 
 ```
 sequence_length = 64
@@ -66,11 +66,11 @@ The integer value assigned to the variable `sequence_length` specifies the lengt
 
 #### Functionality
 
-While the tool is running, it continuously extracts a short short motion sequence from one of the motion capture files of the first dancer that are loaded during startup. The short motion sequence in then passed as input into the motion continuation model. Using this input, the model creates synthetic motions for the second dancer in real-time.  As time progresses, the tool increments the frame index from which the input motion sequence is extracted. This frame index changes within the limits of a user specified frame range. When the frame index exceeds the upper end of the corresponding frame range, the frame index wraps around to the lower end of the frame range.  This procedure continues until the tool is stopped. While running, the behaviour of the tool can be controlled by sending it OSC messages. The tool also outputs the predicted frames as OSC messages. 
+While the tool is running, it continuously extracts a short short motion sequence from one of the motion capture files of the first dancer that are loaded during startup. The short motion sequence in then passed as input into the motion translation model. Using this input, the model creates synthetic motions for the second dancer in real-time.  As time progresses, the tool increments the frame index from which the input motion sequence is extracted. This frame index changes within the limits of a user specified frame range. When the frame index exceeds the upper end of the corresponding frame range, the frame index wraps around to the lower end of the frame range.  This procedure continues until the tool is stopped. While running, the behaviour of the tool can be controlled by sending it OSC messages. The tool also outputs the predicted frames as OSC messages. 
 
 ### Graphical User Interface
 
-The tool provides a minimal GUI  for starting and stopping the motion continuation and for displaying both the original motions of the first dancer and the generated motions of the second dancer as simple 3D stick figure (see Figure 1 left side).
+The tool provides a minimal GUI  for starting and stopping the motion translation and for displaying both the original motions of the first dancer and the generated motions of the second dancer as simple 3D stick figure (see Figure 1 left side).
 
 ### OSC Communication
 
