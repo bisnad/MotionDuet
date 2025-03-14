@@ -217,7 +217,7 @@ class MotionSynthesis():
                 self.seq_update_index = 0
                 
     def _gen(self):
-         
+
         orig_seq_window = self.orig_seq[self.orig_seq_frame_index:self.orig_seq_frame_index + self.seq_window_length, ...]
         orig_seq_window = torch.from_numpy(orig_seq_window).reshape((1, self.seq_window_length, self.pose_dim)).to(self.device)
         
