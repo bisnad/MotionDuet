@@ -33,10 +33,19 @@ print('Using {} device'.format(device))
 
 """
 Mocap Settings
+
+important: the skeleton needs to be identical in all mocap recordings
 """
 
-# important: the skeleton needs to be identical in all mocap recordings
+# Example: XSens Mocap Recording
+mocap_file_path = "data/mocap"
+mocap_files = [ [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ] ]
+mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
+mocap_pos_scale = 1.0
+mocap_fps = 50
+mocap_loss_weights_file = None
 
+"""
 # Example: XSens Mocap Recording
 mocap_file_path = "../../../Data/Mocap/XSens/Stocos/Duets/fbx_50hz"
 mocap_files = [ [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ] ]
@@ -44,6 +53,7 @@ mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
 mocap_pos_scale = 1.0
 mocap_fps = 50
 mocap_loss_weights_file = None
+"""
 
 
 """

@@ -34,12 +34,23 @@ print('Using {} device'.format(device))
 Mocap Settings
 """
 
-mocap_file_path = "D:/Data/mocap/stocos/Duets/Amsterdam_2024/fbx_50hz"
+# Example: XSens Mocap Recording
+mocap_file_path = "data/mocap"
 mocap_files = [ [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ] ]
 mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
 mocap_pos_scale = 1.0
 mocap_fps = 50
 mocap_loss_weights_file = None
+
+"""
+# Example: XSens Mocap Recording
+mocap_file_path = "../../../Data/Mocap/XSens/Stocos/Duets/fbx_50hz"
+mocap_files = [ [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ] ]
+mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
+mocap_pos_scale = 1.0
+mocap_fps = 50
+mocap_loss_weights_file = None
+"""
 
 """
 Model Settings
@@ -65,9 +76,7 @@ Training Settings
 
 sequence_offset = 2 # when creating sequence excerpts, each excerpt is offset from the previous one by this value
 batch_size = 16
-train_percentage = 0.8 # train / test split
 test_percentage  = 0.2
-dp_learning_rate = 5e-4
 ae_learning_rate = 1e-4
 ae_norm_loss_scale = 0.1
 ae_pos_loss_scale = 0.1
