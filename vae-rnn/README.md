@@ -1,6 +1,6 @@
 ## AI-Toolbox - Motion Duet - VAE RNN
 
-![MocapPlayer](./data/media/vae-rnn_deepfake_screenshot.JPG)
+![MocapPlayer](./data/media/vae-rnn_deepfake_screenshot.jpg)
 
 Figure 1. Screenshot of the Motion Deep Fake tool after training concluded. The image on the left depicts the learning progress as graph plot. The images on the right depict stills from GIF animations. From top to bottom and left to right, these stills show the original motion of dancer 1, the original motion of dancer 2, the motion of dancer 1 transformed into the motion of dancer 2, and the motion of dancer 2 transformed into the motion of dancer 1. 
 
