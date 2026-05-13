@@ -23,3 +23,5 @@
 /vae-rnn_interactive/__pycache__
 /vae-rnn_interactive_v2/.spyproject
 /vae-rnn_interactive_v2/__pycache__
+/transformer_mdn/.spyproject/config
+/transformer_mdn/common/__pycache__
