@@ -410,13 +410,20 @@ def forward_kinematics(rotations, root_positions):
 
     for jI in range(offsets.shape[0]):
         if parents[jI] == -1:
-            positions_world.append(root_positions)
-            rotations_world.append(rotations[:, :, 0])
+            positions_world.append(root_positions.contiguous())
+            # FIX: Ensure initial rotation is contiguous
+            rotations_world.append(rotations[:, :, 0].contiguous())
         else:
-            positions_world.append(qrot(rotations_world[parents[jI]], expanded_offsets[:, :, jI]) \
-                                   + positions_world[parents[jI]])
+            # FIX: Ensure both inputs to qrot are contiguous
+            q = rotations_world[parents[jI]].contiguous()
+            v = expanded_offsets[:, :, jI].contiguous()
+            
+            positions_world.append(qrot(q, v) + positions_world[parents[jI]])
+            
             if len(children[jI]) > 0:
-                rotations_world.append(qmul(rotations_world[parents[jI]], rotations[:, :, jI]))
+                # FIX: Ensure the new rotation slice is contiguous
+                q_child = rotations[:, :, jI].contiguous()
+                rotations_world.append(qmul(q, q_child))
             else:
                 rotations_world.append(None)
 
@@ -425,8 +432,12 @@ def forward_kinematics(rotations, root_positions):
 def pos_loss(y, yhat):
     _yhat = yhat.reshape(-1, 4)
     _yhat_norm = nn.functional.normalize(_yhat, p=2, dim=1)
-    _y_rot = y.reshape((y.shape[0], y.shape[1], -1, 4))
-    _yhat_rot = _yhat.reshape((y.shape[0], y.shape[1], -1, 4))
+    
+    # FIX: Ensure base tensors are contiguous
+    _y_rot = y.reshape((y.shape[0], y.shape[1], -1, 4)).contiguous()
+    
+    # FIX: Use _yhat_norm instead of _yhat, and ensure it's contiguous
+    _yhat_rot = _yhat_norm.reshape((y.shape[0], y.shape[1], -1, 4)).contiguous()
 
     zero_trajectory = torch.zeros((y.shape[0], y.shape[1], 3), dtype=torch.float32, requires_grad=True).to(device)
 
