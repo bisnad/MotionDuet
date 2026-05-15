@@ -531,6 +531,7 @@ def train_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
     if teacher_forcing:
         _dancer1_x = dancer1_mocap[:, :-1, :]
         _dancer2_x = dancer2_mocap[:, :-1, :]
+        # Target is all next frames
         _dancer2_y = dancer2_mocap[:, 1:, :]
 
         log_pi, mu, sigma = transformer(_dancer1_x, _dancer2_x, return_sequence=True)
@@ -538,19 +539,21 @@ def train_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
     else:
         _dancer1_x = dancer1_mocap[:, :seq_length, :]
         _dancer2_x = dancer2_mocap[:, :seq_length, :]
-        _dancer2_y = dancer2_mocap[:, 1:seq_length + seq_non_teacherforcing, :]
+        
+        # Target is just the specifically generated window (length = seq_non_teacherforcing)
+        _dancer2_y = dancer2_mocap[:, seq_length:seq_length + seq_non_teacherforcing, :]
 
         _log_pi_list, _mu_list, _sigma_list = [], [], []
-
+        
         for i in range(seq_non_teacherforcing):
             log_pi, mu, sigma = transformer(_dancer1_x, _dancer2_x, return_sequence=False)
-
+            
             _log_pi_list.append(log_pi)
             _mu_list.append(mu)
             _sigma_list.append(sigma)
-
+            
             _pred_pose = sample_mdn(log_pi, mu, sigma, pi_temperature=pi_temperature)
-
+            
             if i < seq_non_teacherforcing - 1:
                 _dancer1_x = dancer1_mocap[:, i+1:seq_length+i+1, :]
                 _dancer2_x = torch.cat((_dancer2_x[:, 1:, :], _pred_pose), axis=1)
@@ -558,13 +561,13 @@ def train_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
         log_pi = torch.cat(_log_pi_list, dim=1)
         mu = torch.cat(_mu_list, dim=1)
         sigma = torch.cat(_sigma_list, dim=1)
-
+    
     _loss, _nll_loss, _pos_loss, _rot_loss = loss(log_pi, mu, sigma, _dancer2_y) 
 
     optimizer.zero_grad()
     _loss.backward()
     optimizer.step()
-
+    
     return _loss, _nll_loss, _pos_loss, _rot_loss
 
 @torch.no_grad()
@@ -574,6 +577,7 @@ def test_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
     if teacher_forcing:
         _dancer1_x = dancer1_mocap[:, :-1, :]
         _dancer2_x = dancer2_mocap[:, :-1, :]
+        # Target is all next frames
         _dancer2_y = dancer2_mocap[:, 1:, :]
 
         log_pi, mu, sigma = transformer(_dancer1_x, _dancer2_x, return_sequence=True)
@@ -581,19 +585,21 @@ def test_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
     else:
         _dancer1_x = dancer1_mocap[:, :seq_length, :]
         _dancer2_x = dancer2_mocap[:, :seq_length, :]
-        _dancer2_y = dancer2_mocap[:, 1:seq_length + seq_non_teacherforcing, :]
+        
+        # Target is just the specifically generated window (length = seq_non_teacherforcing)
+        _dancer2_y = dancer2_mocap[:, seq_length:seq_length + seq_non_teacherforcing, :]
 
         _log_pi_list, _mu_list, _sigma_list = [], [], []
-
+        
         for i in range(seq_non_teacherforcing):
             log_pi, mu, sigma = transformer(_dancer1_x, _dancer2_x, return_sequence=False)
-
+            
             _log_pi_list.append(log_pi)
             _mu_list.append(mu)
             _sigma_list.append(sigma)
-
+            
             _pred_pose = sample_mdn(log_pi, mu, sigma, pi_temperature=pi_temperature)
-
+            
             if i < seq_non_teacherforcing - 1:
                 _dancer1_x = dancer1_mocap[:, i+1:seq_length+i+1, :]
                 _dancer2_x = torch.cat((_dancer2_x[:, 1:, :], _pred_pose), axis=1)
@@ -601,7 +607,7 @@ def test_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
         log_pi = torch.cat(_log_pi_list, dim=1)
         mu = torch.cat(_mu_list, dim=1)
         sigma = torch.cat(_sigma_list, dim=1)
-
+    
     _loss, _nll_loss, _pos_loss, _rot_loss = loss(log_pi, mu, sigma, _dancer2_y) 
     return _loss, _nll_loss, _pos_loss, _rot_loss
 
@@ -661,9 +667,34 @@ def train(train_dataloader, test_dataloader, epochs):
     return loss_history
 
 if save_weights == True:
-    # Dummy train bypass due to runtime execution constraints
-    # loss_history = train(train_loader, test_loader, epochs)
-    pass
+    loss_history = train(train_loader, test_loader, epochs)
+
+    def save_loss_as_image(loss_history, image_file_name):
+        keys = list(loss_history.keys())
+        epochs_arr = range(len(loss_history[keys[0]]))
+        for key in keys: plt.plot(epochs_arr, loss_history[key], label=key)
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.savefig(image_file_name)
+
+    def save_loss_as_csv(loss_history, csv_file_name):
+        with open(csv_file_name, 'w') as csv_file:
+            csv_columns = list(loss_history.keys())
+            csv_writer = csv.DictWriter(csv_file, fieldnames=csv_columns, delimiter=',', lineterminator='\n')
+            csv_writer.writeheader()
+            for row in range(len(loss_history[csv_columns[0]])):
+                csv_row = {key: loss_history[key][row] for key in loss_history.keys()}
+                csv_writer.writerow(csv_row)
+
+    os.makedirs("results/histories/", exist_ok=True)
+    os.makedirs("results/weights/", exist_ok=True)
+    os.makedirs("results/anims/", exist_ok=True)
+
+    save_loss_as_csv(loss_history, "{}/history_{}.csv".format(save_history_path, epochs))
+    save_loss_as_image(loss_history, "{}/history_{}.png".format(save_history_path, epochs))
+    torch.save(transformer.state_dict(), "{}/transformer_weights_epoch_{}".format(save_weights_path, epochs))
+
 
 # -------------------------------------------------------------------------------------------------
 # Inference and Export
