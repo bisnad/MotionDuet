@@ -1,191 +1,249 @@
 """
-same as transfomer.py
-but creates entire dance sequences for dancer 2 and not only next poses
+Same as transformer_v2.py but:
+    with rotational velocity loss to prevent sudden jumps and enforce temporal smoothness.
 """
 
-"""
-Imports
-"""
+# -------------------------------------------------------------------------------------------------
+# Imports
+# -------------------------------------------------------------------------------------------------
 
 import torch
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 from torch import nn
+import torch.nn.functional as nnF
 from collections import OrderedDict
 import scipy.linalg as sclinalg
 
 import math
 import os, sys, time, subprocess
+import copy
 import numpy as np
 import csv
 import matplotlib.pyplot as plt
 
-
 # mocap specific imports
-
 from common import utils
 from common import bvh_tools as bvh
+from common import fbx_tools as fbx
 from common import mocap_tools as mocap
-from common.quaternion import qmul, qrot, qnormalize_np, slerp, qfix
 from common.pose_renderer import PoseRenderer
+from common.rotation_utils_numpy import RotationUtilsNumpy as rot_np
+from common.rotation_utils_torch import RotationUtilsTorch as rot_to
 
-"""
-Compute Device
-"""
+# -------------------------------------------------------------------------------------------------
+# Compute Device
+# -------------------------------------------------------------------------------------------------
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('Using {} device'.format(device))
 
-"""
-Mocap Settings
-"""
+# -------------------------------------------------------------------------------------------------
+# Mocap Settings
+# -------------------------------------------------------------------------------------------------
 
-mocap_file_path = "D:/Data/mocap/stocos/Duets/Amsterdam_2024/bvh_50hz"
-mocap_files = [ [ "Recording2_JS-001_jason.bvh", "Recording2_JS-001_sherise.bvh" ] ]
-mocap_valid_frame_ranges = [ [ [ 490, 30679] ] ]
+mocap_file_path = "E:/Data/mocap/stocos/Duets/Amsterdam_2024/fbx_50hz"
+mocap_files = [ [ "Jason_Take3.fbx", "Sherise_Take3.fbx" ],
+               [ "Jason_Take4.fbx", "Sherise_Take4.fbx" ],
+               [ "Jason_Take5.fbx", "Sherise_Take5.fbx" ] ]
+mocap_valid_frame_ranges = [ 
+    [ [ 500, 30000 ] ], 
+    [ [ 490, 30679] ],
+    [ [ 500, 30800] ]
+    ]
 mocap_fps = 50
 
-joint_loss_weights = [ 
-    1.0, # Hips
-    1.0, # RightUpLeg
-    1.0, # RightLeg
-    1.0, # RightFoot
-    1.0, # RightToeBase
-    1.0, # RightToeBase_Nub
-    1.0, # LeftUpLeg
-    1.0, # LeftLeg
-    1.0, # LeftFoot
-    1.0, # LeftToeBase
-    1.0, # LeftToeBase_Nub
-    1.0, # Spine
-    1.0, # Spine1
-    1.0, # Spine2
-    1.0, # Spine3
-    1.0, # LeftShoulder
-    1.0, # LeftArm
-    1.0, # LeftForeArm
-    1.0, # LeftHand
-    1.0, # LeftHand_Nub
-    1.0, # RightShoulder
-    1.0, # RightArm
-    1.0, # RightForeArm
-    1.0, # RightHand
-    1.0, # RightHand_Nub
-    1.0, # Neck
-    1.0, # Head
-    1.0 # Head_Nub
-    ]
+train_root_trajectory = False
+mocap_pos_scale = 1.0
 
-"""
-Model Settings
-"""
+joint_loss_weights = [ 1.0 ] * 23 # Simplified to match the count of 28 joints
 
-transformer_layer_count = 6
-transformer_head_count = 8
-transformer_embed_dim = 512
-transformer_dropout = 0.1   
-pos_encoding_max_length = 5000
+# -------------------------------------------------------------------------------------------------
+# Save Paths Settings
+# -------------------------------------------------------------------------------------------------
 
+save_path = "results_Jason_Sherise_Takes3-4_v2/"
+save_weights_path = save_path + "weights/"
+save_history_path = save_path + "history/"
+save_anims_path = save_path + "anims/"
+save_anim_formats = ["gif", "fbx"]
 
-"""
-Training Settings
-"""
+os.makedirs(save_weights_path, exist_ok=True)
+os.makedirs(save_history_path, exist_ok=True)
+os.makedirs(save_anims_path, exist_ok=True)
+
+# -------------------------------------------------------------------------------------------------
+# Model Settings
+# -------------------------------------------------------------------------------------------------
+
+transformer_layer_count = 3  
+transformer_head_count = 4   
+transformer_embed_dim = 256  
+transformer_dropout = 0.5   
+cross_attn_temperature = 3.0 # Increased to bias toward dancer2's own history
+
+# -------------------------------------------------------------------------------------------------
+# Training Settings
+# -------------------------------------------------------------------------------------------------
 
 seq_length = 64
 seq_non_teacherforcing = 10
-teacherforcing_prob = 0.5
+teacher_forcing_prob = 0.5
 
 batch_size = 32
 test_percentage = 0.1
 
 learning_rate = 1e-4
-norm_loss_scale = 0.1
 pos_loss_scale = 0.1
 rot_loss_scale = 0.9
+rot_vel_loss_scale = 0.5
+traj_loss_scale = 0.1
 
 model_save_interval = 10
 save_weights = True
 epochs = 200
 
-"""
-Mocap Visualisation Settings
-"""
+# -------------------------------------------------------------------------------------------------
+# Mocap Visualisation Settings
+# -------------------------------------------------------------------------------------------------
 
 view_ele = 90.0
 view_azi = -90.0
 view_line_width = 1.0
 view_size = 4.0
 
-"""
-Load Data - Mocap
-"""
+# -------------------------------------------------------------------------------------------------
+# Utility: Variable Timestamp Resampling (Time-Range Filtered)
+# -------------------------------------------------------------------------------------------------
+
+def resample_mocap_data(mocap_data, target_fps, time_ranges):
+    times_dict = mocap_data["motion"].get("times", {})
+    joints = mocap_data["skeleton"]["joints"]
+    num_joints = len(joints)
+    
+    pos_local = mocap_data["motion"]["pos_local"]
+    rot_local_euler = mocap_data["motion"]["rot_local_euler"]
+    
+    def get_joint_data(data, j_idx):
+        return data[j_idx] if isinstance(data, list) else data[:, j_idx, :]
+            
+    joint_times_list = []
+    for j_idx, j_name in enumerate(joints):
+        if j_name in times_dict:
+            j_times = times_dict[j_name]
+        else:
+            j_frames = len(get_joint_data(pos_local, j_idx))
+            orig_fps = mocap_data.get("frame_rate", target_fps)
+            j_times = np.arange(j_frames) / orig_fps
+        joint_times_list.append(j_times)
+        
+    resampled_segments = []
+    for t_range in time_ranges:
+        start_time, end_time = t_range[0], t_range[1]
+        target_times = np.arange(start_time, end_time, 1.0 / target_fps)
+        num_frames = len(target_times)
+        
+        new_pos_local = np.zeros((num_frames, num_joints, 3))
+        new_rot_local_euler = np.zeros((num_frames, num_joints, 3))
+        
+        for j_idx in range(num_joints):
+            j_times = joint_times_list[j_idx]
+            j_pos = get_joint_data(pos_local, j_idx)
+            j_rot = get_joint_data(rot_local_euler, j_idx)
+            
+            if len(j_times) == 0: continue
+            if len(j_times) == 1:
+                new_pos_local[:, j_idx, :] = j_pos[0]
+                new_rot_local_euler[:, j_idx, :] = j_rot[0]
+                continue
+                
+            for i in range(3):
+                new_pos_local[:, j_idx, i] = np.interp(target_times, j_times, j_pos[:, i])
+                
+            j_rot_rad = np.deg2rad(j_rot)
+            j_rot_rad_unwrapped = np.unwrap(j_rot_rad, axis=0)
+            j_rot_deg_unwrapped = np.rad2deg(j_rot_rad_unwrapped)
+            
+            for i in range(3):
+                new_rot_local_euler[:, j_idx, i] = np.interp(target_times, j_times, j_rot_deg_unwrapped[:, i])
+                
+        segment_data = copy.deepcopy(mocap_data)
+        segment_data["motion"]["pos_local"] = new_pos_local
+        segment_data["motion"]["rot_local_euler"] = new_rot_local_euler
+        segment_data["frame_rate"] = target_fps
+        
+        if "times" in segment_data["motion"]:
+            del segment_data["motion"]["times"]
+            
+        resampled_segments.append(segment_data)
+        
+    return resampled_segments
+
+# -------------------------------------------------------------------------------------------------
+# Load Data - Mocap
+# -------------------------------------------------------------------------------------------------
 
 bvh_tools = bvh.BVH_Tools()
+fbx_tools = fbx.FBX_Tools()
 mocap_tools = mocap.Mocap_Tools()
 
 all_mocap_data_dancer1 = []
 all_mocap_data_dancer2 = []
 
-for mocap_file_dancer1, mocap_file_dancer2 in mocap_files:
+for i, (mocap_file_dancer1, mocap_file_dancer2) in enumerate(mocap_files):
     
-    print("process file for dancer 1 ", mocap_file_dancer1)
-    
-    bvh_data_dancer1 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer1)
-    mocap_data_dancer1 = mocap_tools.bvh_to_mocap(bvh_data_dancer1)
-    mocap_data_dancer1["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer1["motion"]["rot_local_euler"], mocap_data_dancer1["rot_sequence"])
+    # Convert valid frame ranges to time ranges for resampling
+    time_ranges = [[r[0] / mocap_fps, r[1] / mocap_fps] for r in mocap_valid_frame_ranges[i]]
 
-    all_mocap_data_dancer1.append(mocap_data_dancer1)
+    print("process file for dancer 1 ", mocap_file_dancer1)
+    d1_path = os.path.join(mocap_file_path, mocap_file_dancer1)
+    d1_data = mocap_tools.bvh_to_mocap(bvh_tools.load(d1_path)) if d1_path.endswith(".bvh") else mocap_tools.fbx_to_mocap(fbx_tools.load(d1_path))[0]
+    segments1 = resample_mocap_data(d1_data, mocap_fps, time_ranges)
 
     print("process file for dancer 2 ", mocap_file_dancer2)
-    
-    bvh_data_dancer2 = bvh_tools.load(mocap_file_path + "/" + mocap_file_dancer2)
-    mocap_data_dancer2 = mocap_tools.bvh_to_mocap(bvh_data_dancer2)
-    mocap_data_dancer2["motion"]["rot_local"] = mocap_tools.euler_to_quat(mocap_data_dancer2["motion"]["rot_local_euler"], mocap_data_dancer2["rot_sequence"])
+    d2_path = os.path.join(mocap_file_path, mocap_file_dancer2)
+    d2_data = mocap_tools.bvh_to_mocap(bvh_tools.load(d2_path)) if d2_path.endswith(".bvh") else mocap_tools.fbx_to_mocap(fbx_tools.load(d2_path))[0]
+    segments2 = resample_mocap_data(d2_data, mocap_fps, time_ranges)
 
-    all_mocap_data_dancer2.append(mocap_data_dancer2)
+    for seg1, seg2 in zip(segments1, segments2):
+        for s in [seg1, seg2]:
+            s["skeleton"]["offsets"] *= mocap_pos_scale
+            s["motion"]["pos_local"] *= mocap_pos_scale
+            
+            if not train_root_trajectory:
+                s["skeleton"]["offsets"][0, 0] = 0.0
+                s["skeleton"]["offsets"][0, 2] = 0.0
+                s["motion"]["pos_local"][:, 0, 0] = 0.0
+                s["motion"]["pos_local"][:, 0, 2] = 0.0
+                
+            rot_quat = mocap_tools.euler_to_quat(s["motion"]["rot_local_euler"], s["rot_sequence"])
+            s["motion"]["rot_local"] = rot_np.quat_to_r6d(rot_quat)
+            
+        all_mocap_data_dancer1.append(seg1)
+        all_mocap_data_dancer2.append(seg2)
 
-
-# retrieve mocap properties (from dancer 1, dancer 2 properties are supposed to be identical)
+# Retrieve mocap properties
 mocap_data = all_mocap_data_dancer1[0]
 joint_count = mocap_data["motion"]["rot_local"].shape[1]
-joint_dim = mocap_data["motion"]["rot_local"].shape[2]
+joint_dim = 6
 pose_dim = joint_count * joint_dim
+input_dim = pose_dim + 3 if train_root_trajectory else pose_dim
 
 offsets = mocap_data["skeleton"]["offsets"].astype(np.float32)
 parents = mocap_data["skeleton"]["parents"]
 children = mocap_data["skeleton"]["children"]
 
-# create edge list
 def get_edge_list(children):
     edge_list = []
-
     for parent_joint_index in range(len(children)):
         for child_joint_index in children[parent_joint_index]:
             edge_list.append([parent_joint_index, child_joint_index])
-    
     return edge_list
 
 edge_list = get_edge_list(children)
 
-# calculate normalization values
-all_mocap_rot_local = []
-
-for mocap_data_dancer1, mocap_data_dancer2 in zip(all_mocap_data_dancer1, all_mocap_data_dancer2):
-    mocap_rot_local_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    mocap_rot_local_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-
-    all_mocap_rot_local.append(mocap_rot_local_dancer1)
-    all_mocap_rot_local.append(mocap_rot_local_dancer2)
-    
-all_mocap_rot_local = np.concatenate(all_mocap_rot_local, axis=0)
-all_mocap_rot_local = np.reshape(all_mocap_rot_local, (-1, pose_dim))
-
-mocap_mean = np.mean(all_mocap_rot_local, axis=0)
-mocap_std = np.std(all_mocap_rot_local, axis=0)
-
-"""
-Create Dataset
-"""
+# -------------------------------------------------------------------------------------------------
+# Create Dataset
+# -------------------------------------------------------------------------------------------------
 
 total_seq_length = seq_length + seq_non_teacherforcing
 
@@ -193,295 +251,276 @@ dancer1_data = []
 dancer2_data = []
 
 for i in range(len(all_mocap_data_dancer1)):
-    
     mocap_data_dancer1 = all_mocap_data_dancer1[i]
     mocap_data_dancer2 = all_mocap_data_dancer2[i]
     
-    pose_sequence_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    pose_sequence_dancer1 = np.reshape(pose_sequence_dancer1, (-1, pose_dim))
-    
-    pose_sequence_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    pose_sequence_dancer2 = np.reshape(pose_sequence_dancer2, (-1, pose_dim))
+    pose_sequence_dancer1 = mocap_data_dancer1["motion"]["rot_local"].reshape(-1, pose_dim)
+    pose_sequence_dancer2 = mocap_data_dancer2["motion"]["rot_local"].reshape(-1, pose_dim)
 
-    print("shape ", pose_sequence_dancer1.shape)
-    
-    valid_frame_ranges = mocap_valid_frame_ranges[i]
-    
-    for valid_frame_range in valid_frame_ranges:
+    if train_root_trajectory:
+        root_positions1 = mocap_data_dancer1["motion"]["pos_local"][:, 0, :]
+        root_positions2 = mocap_data_dancer2["motion"]["pos_local"][:, 0, :]
+        pose_sequence_dancer1 = np.concatenate((root_positions1, pose_sequence_dancer1), axis=1)
+        pose_sequence_dancer2 = np.concatenate((root_positions2, pose_sequence_dancer2), axis=1)
         
-        frame_range_start = valid_frame_range[0]
-        frame_range_end = valid_frame_range[1]
-        
-        print("frame range from ", frame_range_start, " to ", frame_range_end)
-        
-        for pI in np.arange(frame_range_start, frame_range_end - total_seq_length - 2):
+    for pI in np.arange(0, len(pose_sequence_dancer1) - total_seq_length - 2):
+        dancer1_data.append(pose_sequence_dancer1[pI:pI+total_seq_length + 1])
+        dancer2_data.append(pose_sequence_dancer2[pI:pI+total_seq_length + 1])
 
-            sequence_excerpt_dancer1 = pose_sequence_dancer1[pI:pI+total_seq_length + 1]
-            dancer1_data.append(sequence_excerpt_dancer1)
-            
-            sequence_excerpt_dancer2 = pose_sequence_dancer2[pI:pI+total_seq_length + 1]
-            dancer2_data.append(sequence_excerpt_dancer2)
+dancer1_data = np.array(dancer1_data, dtype=np.float32)
+dancer2_data = np.array(dancer2_data, dtype=np.float32)
 
-dancer1_data = np.array(dancer1_data)
-dancer2_data = np.array(dancer2_data)
+# Pre-normalize root trajectory over the dataset globally
+if train_root_trajectory:
+    combined_roots = np.concatenate((dancer1_data[:, :, :3], dancer2_data[:, :, :3]), axis=0)
+    root_pos_mean = np.mean(combined_roots, axis=(0,1), keepdims=True)
+    root_pos_std = np.std(combined_roots, axis=(0,1), keepdims=True)
+    root_pos_std[root_pos_std == 0] = 1.0
 
-dancer1_data = torch.from_numpy(dancer1_data).to(torch.float32)
-dancer2_data = torch.from_numpy(dancer2_data).to(torch.float32)
+    dancer1_data[:, :, :3] = (dancer1_data[:, :, :3] - root_pos_mean) / root_pos_std
+    dancer2_data[:, :, :3] = (dancer2_data[:, :, :3] - root_pos_mean) / root_pos_std
+
+    root_pos_mean_tensor = torch.from_numpy(root_pos_mean[0]).to(device)
+    root_pos_std_tensor = torch.from_numpy(root_pos_std[0]).to(device)
+
+dancer1_data = torch.from_numpy(dancer1_data)
+dancer2_data = torch.from_numpy(dancer2_data)
 
 class DuetDataset(Dataset):
     def __init__(self, dancer1_data, dancer2_data):
         self.dancer1_data = dancer1_data
         self.dancer2_data = dancer2_data
     
-    def __len__(self):
-        return self.dancer1_data.shape[0]
-    
-    def __getitem__(self, idx):
-        return self.dancer1_data[idx, ...], self.dancer2_data[idx, ...]
+    def __len__(self): return self.dancer1_data.shape[0]
+    def __getitem__(self, idx): return self.dancer1_data[idx, ...], self.dancer2_data[idx, ...]
 
-# FIX: Splitting temporally instead of randomly to prevent severe data leakage from sliding window overlap
+# Temporal split 
 total_samples = len(dancer1_data)
 test_size = int(test_percentage * total_samples)
 train_size = total_samples - test_size
 
-# Temporal split
-train_dancer1 = dancer1_data[:train_size]
-train_dancer2 = dancer2_data[:train_size]
-test_dancer1 = dancer1_data[train_size:]
-test_dancer2 = dancer2_data[train_size:]
-
-train_dataset = DuetDataset(train_dancer1, train_dancer2)
-test_dataset = DuetDataset(test_dancer1, test_dancer2)
+train_dataset = DuetDataset(dancer1_data[:train_size], dancer2_data[:train_size])
+test_dataset = DuetDataset(dancer1_data[train_size:], dancer2_data[train_size:])
 
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-X_batch, y_batch = next(iter(train_loader))
-
-print("X_batch s ", X_batch.shape)
-print("y_batch s ", y_batch.shape)
-
-"""
-Create Models - PositionalEncoding
-"""
+# -------------------------------------------------------------------------------------------------
+# Create Models
+# -------------------------------------------------------------------------------------------------
 
 class PositionalEncoding(nn.Module):
     def __init__(self, dim_model, dropout_p, max_len):
         super().__init__()
-        # Info
         self.dropout = nn.Dropout(dropout_p)
-        
-        # Encoding - From formula
         pos_encoding = torch.zeros(max_len, dim_model)
-        positions_list = torch.arange(0, max_len, dtype=torch.float).view(-1, 1) # 0, 1, 2, 3, 4, 5
-        division_term = torch.exp(torch.arange(0, dim_model, 2).float() * (-math.log(10000.0)) / dim_model) # 1000^(2i/dim_model)
-        
+        positions_list = torch.arange(0, max_len, dtype=torch.float).view(-1, 1) 
+        division_term = torch.exp(torch.arange(0, dim_model, 2).float() * (-math.log(10000.0)) / dim_model) 
         pos_encoding[:, 0::2] = torch.sin(positions_list * division_term)
         pos_encoding[:, 1::2] = torch.cos(positions_list * division_term)
-        
-        # FIX: unsqueeze to shape (1, max_len, dim_model) to match batch_first=True
         pos_encoding = pos_encoding.unsqueeze(0)
         self.register_buffer("pos_encoding", pos_encoding)
         
     def forward(self, token_embedding: torch.tensor) -> torch.tensor:
-        # FIX: Sliced along sequence length (size(1)), not batch size (size(0))
         return self.dropout(token_embedding + self.pos_encoding[:, :token_embedding.size(1), :])
 
+class CustomTransformerDecoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, cross_attn_temp=1.0):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.multihead_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.cross_attn_temp = cross_attn_temp
+        
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
 
-"""
-Create Models - Transformer
-"""
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+        self.activation = nn.ReLU()
+
+    def forward(self, tgt, memory, tgt_mask=None, memory_mask=None,
+                tgt_key_padding_mask=None, memory_key_padding_mask=None,
+                tgt_is_causal=False, memory_is_causal=False, **kwargs):
+        
+        # 1. Self Attention (Dancer 2's continuity)
+        tgt2 = self.self_attn(tgt, tgt, tgt, 
+                              attn_mask=tgt_mask, 
+                              key_padding_mask=tgt_key_padding_mask)[0]
+        tgt = tgt + self.dropout1(tgt2)
+        tgt = self.norm1(tgt)
+
+        # 2. Cross Attention with Temperature Scaling Trick
+        scaled_query = tgt / self.cross_attn_temp
+        
+        tgt2 = self.multihead_attn(scaled_query, memory, memory, 
+                                   attn_mask=memory_mask, 
+                                   key_padding_mask=memory_key_padding_mask)[0]
+        tgt = tgt + self.dropout2(tgt2)
+        tgt = self.norm2(tgt)
+
+        # 3. Feed Forward Network
+        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
+        tgt = tgt + self.dropout3(tgt2)
+        tgt = self.norm3(tgt)
+        
+        return tgt
 
 class Transformer(nn.Module):
-
-    def __init__(
-        self,
-        mocap_dim,
-        embed_dim,
-        num_heads,
-        num_encoder_layers,
-        num_decoder_layers,
-        dropout_p,
-        pos_encoding_max_length
-    ):
+    def __init__(self, mocap_dim, embed_dim, num_heads, num_encoder_layers, num_decoder_layers, dropout_p, pos_encoding_max_length, cross_attn_temp=1.0):
         super().__init__()
-
         self.embed_dim = embed_dim
-
-        # LAYERS
-        self.mocap2embed = nn.Linear(mocap_dim, embed_dim) # map mocap data to embedding
-
-        self.positional_encoder = PositionalEncoding(
-            dim_model=embed_dim, dropout_p=dropout_p, max_len=pos_encoding_max_length
-        )
+        self.mocap2embed = nn.Linear(mocap_dim, embed_dim)
+        self.positional_encoder = PositionalEncoding(dim_model=embed_dim, dropout_p=dropout_p, max_len=pos_encoding_max_length)
         
+        # Standard Encoder
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True)
         self.encoder = nn.TransformerEncoder(self.encoder_layer, num_layers = num_encoder_layers)
         
-        self.decoder_layer = nn.TransformerDecoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True)
+        # Custom Decoder with temperature control
+        self.decoder_layer = CustomTransformerDecoderLayer(
+            d_model=embed_dim, 
+            nhead=num_heads, 
+            dropout=dropout_p, 
+            cross_attn_temp=cross_attn_temp
+        )
         self.decoder = nn.TransformerDecoder(self.decoder_layer, num_layers = num_decoder_layers)
         
-        self.embed2mocap = nn.Linear(embed_dim, mocap_dim) # map embedding to mocap data
+        self.embed2mocap = nn.Linear(embed_dim, mocap_dim)
         
-    def get_src_mask(self, size) -> torch.tensor:
-        mask = torch.ones(size, size)
-        mask = mask.float()
-        mask = mask.masked_fill(mask == 0, float('-inf')) 
-        mask = mask.masked_fill(mask == 1, float(0.0)) 
-        return mask
-       
-    def get_tgt_mask(self, size) -> torch.tensor:
-        mask = torch.tril(torch.ones(size, size) == 1) 
-        mask = mask.float()
-        mask = mask.masked_fill(mask == 0, float('-inf')) 
-        mask = mask.masked_fill(mask == 1, float(0.0)) 
-        return mask
-        
-       
     def forward(self, mocap_data_src, mocap_data_tgt):
+        src_mask = nn.Transformer.generate_square_subsequent_mask(mocap_data_src.shape[1], device=mocap_data_src.device)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(mocap_data_tgt.shape[1], device=mocap_data_tgt.device)
         
-        src_mask = self.get_src_mask(mocap_data_src.shape[1]).to(mocap_data_src.device)
-        tgt_mask = self.get_tgt_mask(mocap_data_tgt.shape[1]).to(mocap_data_tgt.device)
-        
-        mocap_src_embedded = self.mocap2embed(mocap_data_src) * math.sqrt(self.embed_dim)
-        mocap_src_embedded = self.positional_encoder(mocap_src_embedded)
-        
-        mocap_tgt_embedded = self.mocap2embed(mocap_data_tgt) * math.sqrt(self.embed_dim)
-        mocap_tgt_embedded = self.positional_encoder(mocap_tgt_embedded)
+        mocap_src_embedded = self.positional_encoder(self.mocap2embed(mocap_data_src) * math.sqrt(self.embed_dim))
+        mocap_tgt_embedded = self.positional_encoder(self.mocap2embed(mocap_data_tgt) * math.sqrt(self.embed_dim))
 
         encoder_out = self.encoder(mocap_src_embedded, mask=src_mask)
-        decoder_out = self.decoder(mocap_tgt_embedded, encoder_out, tgt_mask =tgt_mask)
-        out = self.embed2mocap(decoder_out)
-        
-        return out
+        decoder_out = self.decoder(mocap_tgt_embedded, encoder_out, tgt_mask=tgt_mask)
+        return self.embed2mocap(decoder_out)
 
-mocap_dim = pose_dim
-
-transformer = Transformer(mocap_dim=mocap_dim,
-                          embed_dim=transformer_embed_dim, 
-                          num_heads=transformer_head_count, 
-                          num_encoder_layers=transformer_layer_count, 
-                          num_decoder_layers=transformer_layer_count, 
-                          dropout_p=transformer_dropout,
-                          pos_encoding_max_length=pos_encoding_max_length).to(device)
+pos_encoding_max_length = seq_length + seq_non_teacherforcing
+transformer = Transformer(
+    mocap_dim=input_dim, 
+    embed_dim=transformer_embed_dim, 
+    num_heads=transformer_head_count, 
+    num_encoder_layers=transformer_layer_count, 
+    num_decoder_layers=transformer_layer_count, 
+    dropout_p=transformer_dropout, 
+    pos_encoding_max_length=pos_encoding_max_length,
+    cross_attn_temp=cross_attn_temperature 
+).to(device)
 
 print(transformer)
 
-# test model
 
-dancer1_input = X_batch[:, :seq_length, :].to(device)
-dancer2_input = y_batch[:, :seq_length, :].to(device)
-dancer2_output = transformer(dancer1_input, dancer2_input)
+# -------------------------------------------------------------------------------------------------
+# Training
+# -------------------------------------------------------------------------------------------------
 
-"""
-Training
-"""
+optimizer = torch.optim.AdamW(transformer.parameters(), lr=learning_rate, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+joint_loss_weights_t = torch.tensor(joint_loss_weights, dtype=torch.float32).reshape(1, 1, -1).to(device)
 
-optimizer = torch.optim.Adam(transformer.parameters(), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.336) 
-
-mocap_mean_tensor = torch.tensor(mocap_mean).to(torch.float32).to(device)
-mocap_std_tensor = torch.tensor(mocap_std).to(torch.float32).to(device)
-
-mocap_mean_tensor = mocap_mean_tensor.reshape(1, 1, pose_dim)
-mocap_std_tensor = mocap_std_tensor.reshape(1, 1, pose_dim)
-
-joint_loss_weights = torch.tensor(joint_loss_weights, dtype=torch.float32)
-joint_loss_weights = joint_loss_weights.reshape(1, 1, -1).to(device)
-
-
-def norm_loss(yhat):
-    _yhat = yhat.reshape(-1, 4)
-    _norm = torch.norm(_yhat, dim=1)
-    _diff = (_norm - 1.0) ** 2
-    _loss = torch.mean(_diff)
-    return _loss
-
-def forward_kinematics(rotations, root_positions):
-    assert len(rotations.shape) == 4
-    assert rotations.shape[-1] == 4
-    
-    toffsets = torch.tensor(offsets).to(device)
-    
+def forward_kinematics(rotation_matrices, root_positions):
+    t_offsets = torch.tensor(offsets).to(device)
+    expanded_offsets = t_offsets.expand(rotation_matrices.shape[0], rotation_matrices.shape[1], offsets.shape[0], offsets.shape[1]).unsqueeze(-1)
     positions_world = []
     rotations_world = []
-
-    expanded_offsets = toffsets.expand(rotations.shape[0], rotations.shape[1], offsets.shape[0], offsets.shape[1])
-
+    
     for jI in range(offsets.shape[0]):
         if parents[jI] == -1:
-            positions_world.append(root_positions.contiguous())
-            # FIX: Ensure initial rotation is contiguous
-            rotations_world.append(rotations[:, :, 0].contiguous())
+            positions_world.append(root_positions)
+            rotations_world.append(rotation_matrices[:, :, 0])
         else:
-            # FIX: Ensure both inputs to qrot are contiguous
-            q = rotations_world[parents[jI]].contiguous()
-            v = expanded_offsets[:, :, jI].contiguous()
-            
-            positions_world.append(qrot(q, v) + positions_world[parents[jI]])
-            
-            if len(children[jI]) > 0:
-                # FIX: Ensure the new rotation slice is contiguous
-                q_child = rotations[:, :, jI].contiguous()
-                rotations_world.append(qmul(q, q_child))
-            else:
-                rotations_world.append(None)
+            parent_rot = rotations_world[parents[jI]]
+            local_offset = expanded_offsets[:, :, jI]
+            rotated_offset = torch.matmul(parent_rot, local_offset).squeeze(-1)
+            positions_world.append(rotated_offset + positions_world[parents[jI]])
 
+            if len(children[jI]) > 0:
+                new_world_rot = torch.matmul(parent_rot, rotation_matrices[:, :, jI])
+                rotations_world.append(new_world_rot)
+            else:
+                rotations_world.append(parent_rot)
+                
     return torch.stack(positions_world, dim=3).permute(0, 1, 3, 2)
 
 def pos_loss(y, yhat):
-    _yhat = yhat.reshape(-1, 4)
-    _yhat_norm = nn.functional.normalize(_yhat, p=2, dim=1)
-    
-    # FIX: Ensure base tensors are contiguous
-    _y_rot = y.reshape((y.shape[0], y.shape[1], -1, 4)).contiguous()
-    
-    # FIX: Use _yhat_norm instead of _yhat, and ensure it's contiguous
-    _yhat_rot = _yhat_norm.reshape((y.shape[0], y.shape[1], -1, 4)).contiguous()
+    if train_root_trajectory:
+        y_root_traj = (y[:, :, :3] * root_pos_std_tensor) + root_pos_mean_tensor
+        yhat_root_traj = (yhat[:, :, :3] * root_pos_std_tensor) + root_pos_mean_tensor
+        y_rot_6d = y[:, :, 3:].reshape(y.shape[0], y.shape[1], joint_count, 6)
+        yhat_rot_6d = yhat[:, :, 3:].reshape(yhat.shape[0], yhat.shape[1], joint_count, 6)
+    else:
+        y_root_traj = torch.zeros((y.shape[0], y.shape[1], 3)).to(device)
+        yhat_root_traj = torch.zeros((yhat.shape[0], yhat.shape[1], 3)).to(device)
+        y_rot_6d = y.reshape(y.shape[0], y.shape[1], joint_count, 6)
+        yhat_rot_6d = yhat.reshape(yhat.shape[0], yhat.shape[1], joint_count, 6)
 
-    zero_trajectory = torch.zeros((y.shape[0], y.shape[1], 3), dtype=torch.float32, requires_grad=True).to(device)
+    y_mat = rot_to.r6d_to_mat(y_rot_6d)
+    yhat_mat = rot_to.r6d_to_mat(yhat_rot_6d)
 
-    _y_pos = forward_kinematics(_y_rot, zero_trajectory)
-    _yhat_pos = forward_kinematics(_yhat_rot, zero_trajectory)
+    y_pos = forward_kinematics(y_mat, y_root_traj)
+    yhat_pos = forward_kinematics(yhat_mat, yhat_root_traj)
 
-    _pos_diff = torch.norm((_y_pos - _yhat_pos), dim=3)
-    _pos_diff_weighted = _pos_diff * joint_loss_weights
-    _loss = torch.mean(_pos_diff_weighted)
-
-    return _loss
+    pos_diff = torch.norm(y_pos - yhat_pos, dim=3)
+    return torch.mean(pos_diff * joint_loss_weights_t)
 
 def rot_loss(y, yhat):
-    _y = y.reshape((-1, 4))
-    _yhat = yhat.reshape((-1, 4))
-    _yhat_norm = nn.functional.normalize(_yhat, p=2, dim=1)
-    
-    _yhat_inv = _yhat_norm * torch.tensor([[1.0, -1.0, -1.0, -1.0]], dtype=torch.float32).to(device)
+    if train_root_trajectory:
+        y = y[:, :, 3:]
+        yhat = yhat[:, :, 3:]
 
-    _diff = qmul(_yhat_inv, _y)
-    _len = torch.norm(_diff[:, 1:], dim=1)
-    _atan = torch.atan2(_len, _diff[:, 0])
-    _abs = torch.abs(_atan)
-    
-    _abs = _abs.reshape(-1, 1, joint_count)
-    _abs_weighted = _abs * joint_loss_weights
-    
-    _loss = torch.mean(_abs_weighted)   
-    return _loss
+    y_rot_6d = y.reshape(y.shape[0], y.shape[1], joint_count, 6)
+    yhat_rot_6d = yhat.reshape(yhat.shape[0], yhat.shape[1], joint_count, 6)
+    y_mat = rot_to.r6d_to_mat(y_rot_6d)
+    yhat_mat = rot_to.r6d_to_mat(yhat_rot_6d)
+
+    trace = torch.diagonal(torch.matmul(y_mat.transpose(-1, -2), yhat_mat), dim1=-2, dim2=-1).sum(-1)
+    angle = torch.acos(torch.clamp((trace - 1) / 2, -0.9999, 0.9999))
+    return torch.mean(angle * joint_loss_weights_t)
+
+# New loss function for Rotational Velocity (Temporal Smoothness)
+def rot_vel_loss(y, yhat):
+    if train_root_trajectory:
+        y = y[:, :, 3:]
+        yhat = yhat[:, :, 3:]
+
+    y_rot_6d = y.reshape(y.shape[0], y.shape[1], joint_count, 6)
+    yhat_rot_6d = yhat.reshape(yhat.shape[0], yhat.shape[1], joint_count, 6)
+    y_mat = rot_to.r6d_to_mat(y_rot_6d)
+    yhat_mat = rot_to.r6d_to_mat(yhat_rot_6d)
+
+    # Compute inter-frame angular velocity proxies via matrix difference
+    y_vel = y_mat[:, 1:] - y_mat[:, :-1]
+    yhat_vel = yhat_mat[:, 1:] - yhat_mat[:, :-1]
+
+    # Penalize the difference between generated velocities and GT velocities
+    vel_diff = torch.norm(y_vel - yhat_vel, dim=(3,4))
+    return torch.mean(vel_diff * joint_loss_weights_t)
 
 def loss(y, yhat):
-    _norm_loss = norm_loss(yhat)
     _pos_loss = pos_loss(y, yhat)
     _rot_loss = rot_loss(y, yhat)
+    _rot_vel_loss = rot_vel_loss(y, yhat)
     
-    _total_loss = 0.0
-    _total_loss += _norm_loss * norm_loss_scale
-    _total_loss += _pos_loss * pos_loss_scale
-    _total_loss += _rot_loss * rot_loss_scale
+    _total_loss = (_pos_loss * pos_loss_scale) \
+                + (_rot_loss * rot_loss_scale) \
+                + (_rot_vel_loss * rot_vel_loss_scale)
     
-    return _total_loss, _norm_loss, _pos_loss, _rot_loss
+    if train_root_trajectory:
+        traj_mse = torch.mean((y[:, :, :3] - yhat[:, :, :3]) ** 2)
+        _total_loss += (traj_mse * traj_loss_scale)
+        
+    return _total_loss, _pos_loss, _rot_loss, _rot_vel_loss
 
 def train_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
-    
     transformer.train()
 
     if teacher_forcing:
@@ -489,321 +528,321 @@ def train_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
         _dancer2_x = dancer2_mocap[:, :-1, :]
         _dancer2_y = dancer2_mocap[:, 1:, :]
 
-        _dancer1_x_norm = (_dancer1_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-        _dancer2_x_norm = (_dancer2_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-        _dancer2_yhat_norm = transformer(_dancer1_x_norm, _dancer2_x_norm)
-        _dancer2_yhat = _dancer2_yhat_norm * (mocap_std_tensor + 1e-8) + mocap_mean_tensor
+        _dancer2_yhat = transformer(_dancer1_x, _dancer2_x)
     else:
         _dancer1_x = dancer1_mocap[:, :seq_length, :]
         _dancer2_x = dancer2_mocap[:, :seq_length, :]
-        
-        # FIX: Create correctly sized target that includes the predicted future non-teacher forced steps
         _dancer2_y = dancer2_mocap[:, 1:seq_length + seq_non_teacherforcing, :]
 
-        _dancer1_x_norm = (_dancer1_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-        _dancer2_x_norm = (_dancer2_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-        _dancer2_yhat_norm = transformer(_dancer1_x_norm, _dancer2_x_norm)
-        _dancer2_yhat = _dancer2_yhat_norm * (mocap_std_tensor + 1e-8) + mocap_mean_tensor
-
-        # FIX: Remove detach() to preserve the computational graph
+        _dancer2_yhat = transformer(_dancer1_x, _dancer2_x)
         __dancer2_yhat_all = _dancer2_yhat
 
         for i in range(1, seq_non_teacherforcing):
             _dancer1_x = dancer1_mocap[:, i:seq_length+i, :]
-            
-            # Detach input state to next step to truncate BPTT
             _dancer2_x_step = _dancer2_yhat.detach()
-
-            _dancer1_x_norm = (_dancer1_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-            _dancer2_x_norm = (_dancer2_x_step - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-            _dancer2_yhat_norm = transformer(_dancer1_x_norm, _dancer2_x_norm)
-            _dancer2_yhat = _dancer2_yhat_norm * (mocap_std_tensor + 1e-8) + mocap_mean_tensor
-
-            # FIX: Maintain graph when aggregating the full sequence
+            _dancer2_yhat = transformer(_dancer1_x, _dancer2_x_step)
             __dancer2_yhat_all = torch.cat([__dancer2_yhat_all, _dancer2_yhat[:, -1:, :]], axis=1)
 
         _dancer2_yhat = __dancer2_yhat_all
     
-    _loss, _norm_loss, _pos_loss, _rot_loss = loss(_dancer2_y, _dancer2_yhat) 
+    _loss, _pos_loss, _rot_loss, _rot_vel_loss = loss(_dancer2_y, _dancer2_yhat) 
 
-    # Backpropagation
     optimizer.zero_grad()
     _loss.backward()
     optimizer.step()
     
-    return _loss, _norm_loss, _pos_loss, _rot_loss
+    return _loss, _pos_loss, _rot_loss, _rot_vel_loss
 
 @torch.no_grad()
 def test_step(dancer1_mocap, dancer2_mocap, teacher_forcing):
-    
     transformer.eval()
 
     if teacher_forcing:
         _dancer1_x = dancer1_mocap[:, :-1, :]
         _dancer2_x = dancer2_mocap[:, :-1, :]
         _dancer2_y = dancer2_mocap[:, 1:, :]
-
-        _dancer1_x_norm = (_dancer1_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-        _dancer2_x_norm = (_dancer2_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-        _dancer2_yhat_norm = transformer(_dancer1_x_norm, _dancer2_x_norm)
-        _dancer2_yhat = _dancer2_yhat_norm * (mocap_std_tensor + 1e-8) + mocap_mean_tensor
+        _dancer2_yhat = transformer(_dancer1_x, _dancer2_x)
     else:
         _dancer1_x = dancer1_mocap[:, :seq_length, :]
         _dancer2_x = dancer2_mocap[:, :seq_length, :]
-        
-        # FIX: Target size matching the autoregressive loop
         _dancer2_y = dancer2_mocap[:, 1:seq_length + seq_non_teacherforcing, :]
 
-        _dancer1_x_norm = (_dancer1_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-        _dancer2_x_norm = (_dancer2_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-        _dancer2_yhat_norm = transformer(_dancer1_x_norm, _dancer2_x_norm)
-        _dancer2_yhat = _dancer2_yhat_norm * (mocap_std_tensor + 1e-8) + mocap_mean_tensor
-
+        _dancer2_yhat = transformer(_dancer1_x, _dancer2_x)
         __dancer2_yhat_all = _dancer2_yhat
 
         for i in range(1, seq_non_teacherforcing):
             _dancer1_x = dancer1_mocap[:, i:seq_length+i, :]
             _dancer2_x_step = _dancer2_yhat.detach()
-
-            _dancer1_x_norm = (_dancer1_x - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-            _dancer2_x_norm = (_dancer2_x_step - mocap_mean_tensor) / (mocap_std_tensor + 1e-8)
-            _dancer2_yhat_norm = transformer(_dancer1_x_norm, _dancer2_x_norm)
-            _dancer2_yhat = _dancer2_yhat_norm * (mocap_std_tensor + 1e-8) + mocap_mean_tensor
-
+            _dancer2_yhat = transformer(_dancer1_x, _dancer2_x_step)
             __dancer2_yhat_all = torch.cat([__dancer2_yhat_all, _dancer2_yhat[:, -1:, :]], axis=1)
 
         _dancer2_yhat = __dancer2_yhat_all
     
-    _loss, _norm_loss, _pos_loss, _rot_loss = loss(_dancer2_y, _dancer2_yhat) 
-    
-    return _loss, _norm_loss, _pos_loss, _rot_loss
-
+    _loss, _pos_loss, _rot_loss, _rot_vel_loss = loss(_dancer2_y, _dancer2_yhat) 
+    return _loss, _pos_loss, _rot_loss, _rot_vel_loss
 
 def train(train_dataloader, test_dataloader, epochs):
-    
-    loss_history = {}
-    loss_history["train"] = []
-    loss_history["test"] = []
-    loss_history["norm"] = []
-    loss_history["pos"] = []
-    loss_history["rot"] = []
+    loss_history = {"train": [], "test": [], "pos": [], "rot": [], "rot_vel": []}
 
     for epoch in range(epochs):
         start = time.time()
         
         _train_loss_per_epoch = []
-        _norm_loss_per_epoch = []
         _pos_loss_per_epoch = []
         _rot_loss_per_epoch = []
+        _rot_vel_loss_per_epoch = []
 
         for train_batch in train_dataloader:
             X_batch = train_batch[0].to(device)
             y_batch = train_batch[1].to(device)
 
             use_teacher_forcing = np.random.uniform() < teacher_forcing_prob
-
-            _loss, _norm_loss, _pos_loss, _rot_loss = train_step(X_batch, y_batch, use_teacher_forcing)
+            _loss, _pos_loss, _rot_loss, _rot_vel_loss = train_step(X_batch, y_batch, use_teacher_forcing)
             
-            _loss = _loss.detach().cpu().numpy()
-            _norm_loss = _norm_loss.detach().cpu().numpy()
-            _pos_loss = _pos_loss.detach().cpu().numpy()
-            _rot_loss = _rot_loss.detach().cpu().numpy()
-            
-            _train_loss_per_epoch.append(_loss)
-            _norm_loss_per_epoch.append(_norm_loss)
-            _pos_loss_per_epoch.append(_pos_loss)
-            _rot_loss_per_epoch.append(_rot_loss)
+            _train_loss_per_epoch.append(_loss.detach().cpu().numpy())
+            _pos_loss_per_epoch.append(_pos_loss.detach().cpu().numpy())
+            _rot_loss_per_epoch.append(_rot_loss.detach().cpu().numpy())
+            _rot_vel_loss_per_epoch.append(_rot_vel_loss.detach().cpu().numpy())
 
         _train_loss_per_epoch = np.mean(np.array(_train_loss_per_epoch))
-        _norm_loss_per_epoch = np.mean(np.array(_norm_loss_per_epoch))
         _pos_loss_per_epoch = np.mean(np.array(_pos_loss_per_epoch))
         _rot_loss_per_epoch = np.mean(np.array(_rot_loss_per_epoch))
+        _rot_vel_loss_per_epoch = np.mean(np.array(_rot_vel_loss_per_epoch))
 
         _test_loss_per_epoch = []
-        
         for test_batch in test_dataloader:
             batch_mocap = test_batch[0].to(device)
-            # FIX: Variable naming issue resolved (was batch_audio previously)
             batch_mocap_tgt = test_batch[1].to(device) 
 
-            teacher_forcing = np.random.uniform() < teacher_forcing_prob
-            
-            _loss, _, _, _ = test_step(batch_mocap, batch_mocap_tgt, teacher_forcing)
-
-            _loss = _loss.detach().cpu().numpy()
-            
-            _test_loss_per_epoch.append(_loss)
+            use_teacher_forcing = np.random.uniform() < teacher_forcing_prob
+            _loss, _, _, _ = test_step(batch_mocap, batch_mocap_tgt, use_teacher_forcing)
+            _test_loss_per_epoch.append(_loss.detach().cpu().numpy())
         
         _test_loss_per_epoch = np.mean(np.array(_test_loss_per_epoch))
         
         if epoch % model_save_interval == 0 and save_weights == True:
-            torch.save(transformer.state_dict(), "results/weights/transformer_weights_epoch_{}".format(epoch))
+            torch.save(transformer.state_dict(), "{}/transformer_weights_epoch_{}".format(save_weights_path, epoch))
         
         loss_history["train"].append(_train_loss_per_epoch)
         loss_history["test"].append(_test_loss_per_epoch)
-        loss_history["norm"].append(_norm_loss_per_epoch)
         loss_history["pos"].append(_pos_loss_per_epoch)
         loss_history["rot"].append(_rot_loss_per_epoch)
+        loss_history["rot_vel"].append(_rot_vel_loss_per_epoch)
         
-        scheduler.step()
+        scheduler.step(_test_loss_per_epoch)
         
-        print ('epoch {} : train: {:01.4f} test: {:01.4f} norm {:01.4f} pos {:01.4f} rot {:01.4f} time {:01.2f}'.format(epoch + 1, _train_loss_per_epoch, _test_loss_per_epoch, _norm_loss_per_epoch, _pos_loss_per_epoch, _rot_loss_per_epoch, time.time()-start))
+        print ('epoch {} : train: {:01.4f} test: {:01.4f} pos {:01.4f} rot {:01.4f} rot_vel {:01.4f} time {:01.2f}'.format(
+            epoch + 1, _train_loss_per_epoch, _test_loss_per_epoch, _pos_loss_per_epoch, _rot_loss_per_epoch, _rot_vel_loss_per_epoch, time.time()-start))
     
     return loss_history
 
-# fit model
-loss_history = train(train_loader, test_loader, epochs)
+if save_weights == True:
+    loss_history = train(train_loader, test_loader, epochs)
 
-# save history
-def save_loss_as_image(loss_history, image_file_name):
-    keys = list(loss_history.keys())
-    epochs = len(loss_history[keys[0]])
-    
-    for key in keys:
-        plt.plot(range(epochs), loss_history[key], label=key)
-        
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.show()
-    plt.savefig(image_file_name)
+    def save_loss_as_image(loss_history, image_file_name):
+        keys = list(loss_history.keys())
+        epochs_arr = range(len(loss_history[keys[0]]))
+        for key in keys: plt.plot(epochs_arr, loss_history[key], label=key)
+        plt.xlabel('Epochs')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.savefig(image_file_name)
 
-def save_loss_as_csv(loss_history, csv_file_name):
-    with open(csv_file_name, 'w') as csv_file:
-        csv_columns = list(loss_history.keys())
-        csv_row_count = len(loss_history[csv_columns[0]])
-        
-        csv_writer = csv.DictWriter(csv_file, fieldnames=csv_columns, delimiter=',', lineterminator='\n')
-        csv_writer.writeheader()
-    
-        for row in range(csv_row_count):
-            csv_row = {}
-            for key in loss_history.keys():
-                csv_row[key] = loss_history[key][row]
-            csv_writer.writerow(csv_row)
+    def save_loss_as_csv(loss_history, csv_file_name):
+        with open(csv_file_name, 'w') as csv_file:
+            csv_columns = list(loss_history.keys())
+            csv_writer = csv.DictWriter(csv_file, fieldnames=csv_columns, delimiter=',', lineterminator='\\n')
+            csv_writer.writeheader()
+            for row in range(len(loss_history[csv_columns[0]])):
+                csv_row = {key: loss_history[key][row] for key in loss_history.keys()}
+                csv_writer.writerow(csv_row)
 
-save_loss_as_csv(loss_history, "results/histories/history_{}.csv".format(epochs))
-save_loss_as_image(loss_history, "results/histories/history_{}.png".format(epochs))
+    os.makedirs("results/histories/", exist_ok=True)
+    os.makedirs("results/weights/", exist_ok=True)
+    os.makedirs("results/anims/", exist_ok=True)
 
-# save model weights
-torch.save(transformer.state_dict(), "results/weights/transformer_weights_epoch_{}".format(epochs))
+    save_loss_as_csv(loss_history, "{}/history_{}.csv".format(save_history_path, epochs))
+    save_loss_as_image(loss_history, "{}/history_{}.png".format(save_history_path, epochs))
+    torch.save(transformer.state_dict(), "{}/transformer_weights_epoch_{}".format(save_weights_path, epochs))
 
-"""
-Inference
-"""
+# -------------------------------------------------------------------------------------------------
+# Inference and Export (Remaining unchanged below this point)
+# -------------------------------------------------------------------------------------------------
 
-# inference and rendering 
 poseRenderer = PoseRenderer(edge_list)
 
-view_ele = 90.0
-view_azi = -90.0
-view_line_width = 4.0
-view_size = 8.0
+def export_sequence_gif(pose_sequence, file_name):
+    pose_count = pose_sequence.shape[0]
+    if train_root_trajectory:
+        root_trajectory = pose_sequence[:, :3]
+        rot_sequence = pose_sequence[:, 3:]
+    else:
+        root_trajectory = np.zeros((pose_count, 3), dtype=np.float32)
+        rot_sequence = pose_sequence
 
-def create_ref_sequence_anim(mocap_index, start_pose_index, pose_count, file_name1, file_name2):
+    rot_6d = torch.tensor(rot_sequence).reshape(-1, joint_count, 6)
+    rot_matrices = rot_to.r6d_to_mat(rot_6d.unsqueeze(0).to(device))
+    root_traj_tensor = torch.tensor(root_trajectory).unsqueeze(0).to(device)
     
-    mocap_data_dancer1 = all_mocap_data_dancer1[mocap_index]
-    mocap_data_dancer2 = all_mocap_data_dancer2[mocap_index]
-    
-    pose_sequence_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    pose_sequence_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    
-    sequence_excerpt_dancer1 = pose_sequence_dancer1[start_pose_index:start_pose_index + pose_count]
-    sequence_excerpt_dancer2 = pose_sequence_dancer2[start_pose_index:start_pose_index + pose_count]
-
-    sequence_excerpt_dancer1 = torch.tensor(np.expand_dims(sequence_excerpt_dancer1, axis=0)).to(torch.float32).to(device)
-    sequence_excerpt_dancer2 = torch.tensor(np.expand_dims(sequence_excerpt_dancer2, axis=0)).to(torch.float32).to(device)
-    
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32)).to(device)
-    
-    skel_sequence_dancer1 = forward_kinematics(sequence_excerpt_dancer1, zero_trajectory)
-    skel_sequence_dancer2 = forward_kinematics(sequence_excerpt_dancer2, zero_trajectory)
-
-    skel_sequence_dancer1 = np.squeeze(skel_sequence_dancer1.cpu().numpy())
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer1)
-    
-    skel_images_dancer1 = poseRenderer.create_pose_images(skel_sequence_dancer1, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-    skel_images_dancer1[0].save(file_name1, save_all=True, append_images=skel_images_dancer1[1:], optimize=False, duration=33.0, loop=0)
-
-    skel_sequence_dancer2 = np.squeeze(skel_sequence_dancer2.cpu().numpy())
-    view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence_dancer2)
-    
-    skel_images_dancer2 = poseRenderer.create_pose_images(skel_sequence_dancer2, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
-    skel_images_dancer2[0].save(file_name2, save_all=True, append_images=skel_images_dancer2[1:], optimize=False, duration=33.0, loop=0)
-
-# FIX: Removed the duplicate, broken implementation of create_pred_sequence_anim
-def create_pred_sequence_anim(mocap_index, start_pose_index, pose_count, base_pose, file_name):
-    
-    transformer.eval()
-    
-    mocap_data_dancer1 = all_mocap_data_dancer1[mocap_index]
-    pose_sequence_dancer1 = mocap_data_dancer1["motion"]["rot_local"]
-    sequence_excerpt_dancer1 = pose_sequence_dancer1[start_pose_index:start_pose_index + pose_count]
-    sequence_excerpt_dancer1 = torch.from_numpy(sequence_excerpt_dancer1).to(torch.float32).to(device)
-    sequence_excerpt_dancer1 = torch.reshape(sequence_excerpt_dancer1, (pose_count, pose_dim))
-    
-    mocap_data_dancer2 = all_mocap_data_dancer2[mocap_index]
-    pose_sequence_dancer2 = mocap_data_dancer2["motion"]["rot_local"]
-    sequence_excerpt_dancer2 = pose_sequence_dancer2[start_pose_index:start_pose_index + pose_count]
-    sequence_excerpt_dancer2 = torch.from_numpy(sequence_excerpt_dancer2).to(torch.float32).to(device)
-    sequence_excerpt_dancer2 = torch.reshape(sequence_excerpt_dancer2, (pose_count, pose_dim))
-    
-    _input_dancer1 = sequence_excerpt_dancer1[:seq_length, :]
-    _input_dancer2 = sequence_excerpt_dancer2[:seq_length, :]
-
-    gen_sequence = np.full(shape=(pose_count, joint_count, joint_dim), fill_value=base_pose)
-    
-    for pI in range(0, pose_count - seq_length):
-        
-        print("pI ", pI, " out of ", (pose_count - seq_length))
-        
-        _input_dancer1_batched = torch.unsqueeze(_input_dancer1, axis=0)
-        _input_dancer2_batched = torch.unsqueeze(_input_dancer2, axis=0)
-
-        _input_dancer1_norm = (_input_dancer1_batched - mocap_mean_tensor) / mocap_std_tensor
-        _input_dancer2_norm = (_input_dancer2_batched - mocap_mean_tensor) / mocap_std_tensor
-        
-        _input_dancer1_norm = torch.nan_to_num(_input_dancer1_norm)
-        _input_dancer2_norm = torch.nan_to_num(_input_dancer2_norm)
-        
-        with torch.no_grad():
-            _pred_dancer2_norm = transformer(_input_dancer1_norm, _input_dancer2_norm)
-        
-        _pred_dancer2 = _pred_dancer2_norm * mocap_std_tensor + mocap_mean_tensor
-        
-        gen_sequence[pI] = _pred_dancer2[0, -1, :].detach().cpu().reshape(1, joint_count, joint_dim).numpy()
-
-        _input_dancer1 = sequence_excerpt_dancer1[pI:seq_length + pI, :]
-        _input_dancer2 = torch.cat([_input_dancer2[1:, :].detach().clone(), _pred_dancer2[0, -1:, :].detach().clone()], axis=0)
-        
-    # fix quaternions in gen sequence
-    gen_sequence = gen_sequence.reshape((-1, 4))
-    gen_sequence = gen_sequence / np.linalg.norm(gen_sequence, ord=2, axis=1, keepdims=True)
-    gen_sequence = gen_sequence.reshape((pose_count, joint_count, joint_dim))
-    gen_sequence = qfix(gen_sequence)
-    gen_sequence = np.expand_dims(gen_sequence, axis=0)
-    gen_sequence = torch.from_numpy(gen_sequence).to(torch.float32).to(device)
-        
-    zero_trajectory = torch.tensor(np.zeros((1, pose_count, 3), dtype=np.float32))
-    zero_trajectory = zero_trajectory.to(device)
-    
-    skel_sequence = forward_kinematics(gen_sequence, zero_trajectory)
-    
-    skel_sequence = skel_sequence.detach().cpu().numpy()
-    skel_sequence = np.squeeze(skel_sequence)
+    skel_sequence = forward_kinematics(rot_matrices, root_traj_tensor).squeeze().cpu().numpy()
     
     view_min, view_max = utils.get_equal_mix_max_positions(skel_sequence)
     skel_images = poseRenderer.create_pose_images(skel_sequence, view_min, view_max, view_ele, view_azi, view_line_width, view_size, view_size)
+    skel_images[0].save(file_name, save_all=True, append_images=skel_images[1:], optimize=False, duration=33.0, loop=0)
 
-    skel_images[0].save(file_name, save_all=True, append_images=skel_images[1:], optimize=False, duration=33.0, loop=0) 
+def export_sequence_bvh(pose_sequence, mocap_template, file_name):
+    pose_count = pose_sequence.shape[0]
+    if train_root_trajectory:
+        root_trajectory = pose_sequence[:, :3]
+        rot_sequence = pose_sequence[:, 3:]
+    else:
+        root_trajectory = np.zeros((pose_count, 3), dtype=np.float32)
+        rot_sequence = pose_sequence
+
+    pred_dataset = {
+        "frame_rate": mocap_template.get("frame_rate", mocap_fps),
+        "rot_sequence": mocap_template["rot_sequence"],
+        "skeleton": mocap_template["skeleton"],
+        "motion": {}
+    }
+
+    pos_local = np.repeat(np.expand_dims(pred_dataset["skeleton"]["offsets"], axis=0), pose_count, axis=0)
+    pos_local[:, 0, :] = root_trajectory
+    pred_dataset["motion"]["pos_local"] = pos_local
+
+    rot_seq_6d = np.reshape(rot_sequence, (pose_count, joint_count, 6))
+    pred_dataset["motion"]["rot_local"] = rot_np.r6d_to_quat(rot_seq_6d)
+    pred_dataset["motion"]["rot_local_euler"] = mocap_tools.quat_to_euler_bvh(
+        pred_dataset["motion"]["rot_local"], 
+        pred_dataset["rot_sequence"]
+    )
+
+    pred_bvh = mocap_tools.mocap_to_bvh(pred_dataset)
+    bvh_tools.write(pred_bvh, file_name)
+
+def export_sequence_fbx(pose_sequence, mocap_template, file_name):
+    pose_count = pose_sequence.shape[0]
+    if train_root_trajectory:
+        root_trajectory = pose_sequence[:, :3]
+        rot_sequence = pose_sequence[:, 3:]
+    else:
+        root_trajectory = np.zeros((pose_count, 3), dtype=np.float32)
+        rot_sequence = pose_sequence
+
+    pred_dataset = {
+        "frame_rate": mocap_template.get("frame_rate", mocap_fps),
+        "rot_sequence": mocap_template["rot_sequence"],
+        "skeleton": mocap_template["skeleton"],
+        "motion": {}
+    }
+
+    pos_local = np.repeat(np.expand_dims(pred_dataset["skeleton"]["offsets"], axis=0), pose_count, axis=0)
+    pos_local[:, 0, :] = root_trajectory
+    pred_dataset["motion"]["pos_local"] = pos_local
+
+    rot_seq_6d = np.reshape(rot_sequence, (pose_count, joint_count, 6))
+    pred_dataset["motion"]["rot_local"] = rot_np.r6d_to_quat(rot_seq_6d)
+    pred_dataset["motion"]["rot_local_euler"] = mocap_tools.quat_to_euler(
+        pred_dataset["motion"]["rot_local"], 
+        pred_dataset["rot_sequence"]
+    )
+
+    pred_fbx = mocap_tools.mocap_to_fbx([pred_dataset])
+    fbx_tools.write(pred_fbx, file_name)
+
+def create_ref_sequence(mocap_index, start_pose_index, pose_count, base_file_name_1, base_file_name_2, export_formats=["gif", "bvh", "fbx"]):
+    mocap_data_dancer1 = all_mocap_data_dancer1[mocap_index]
+    mocap_data_dancer2 = all_mocap_data_dancer2[mocap_index]
     
+    def extract_sequence(mocap_data):
+        pose_sequence = mocap_data["motion"]["rot_local"].reshape(-1, pose_dim)[start_pose_index:start_pose_index + pose_count]
+        if train_root_trajectory:
+            root_sequence = mocap_data["motion"]["pos_local"][start_pose_index:start_pose_index + pose_count, 0, :]
+            return np.concatenate((root_sequence, pose_sequence), axis=1)
+        else:
+            return pose_sequence
+            
+    seq_dancer1 = extract_sequence(mocap_data_dancer1)
+    seq_dancer2 = extract_sequence(mocap_data_dancer2)
+    
+    for fmt in export_formats:
+        if fmt == "gif":
+            export_sequence_gif(seq_dancer1, f"{base_file_name_1}.gif")
+            export_sequence_gif(seq_dancer2, f"{base_file_name_2}.gif")
+        elif fmt == "bvh":
+            export_sequence_bvh(seq_dancer1, mocap_data_dancer1, f"{base_file_name_1}.bvh")
+            export_sequence_bvh(seq_dancer2, mocap_data_dancer2, f"{base_file_name_2}.bvh")
+        elif fmt == "fbx":
+            export_sequence_fbx(seq_dancer1, mocap_data_dancer1, f"{base_file_name_1}.fbx")
+            export_sequence_fbx(seq_dancer2, mocap_data_dancer2, f"{base_file_name_2}.fbx")
+
+def create_pred_sequence(mocap_index, start_pose_index, pose_count, base_file_name, export_formats=["gif", "bvh", "fbx"]):
+    transformer.eval()
+    
+    mocap_data_dancer1 = all_mocap_data_dancer1[mocap_index]
+    mocap_data_dancer2 = all_mocap_data_dancer2[mocap_index]
+    
+    def extract_sequence(mocap_data):
+        pose_seq = mocap_data["motion"]["rot_local"].reshape(-1, pose_dim)
+        if train_root_trajectory:
+            root_pos = mocap_data["motion"]["pos_local"][:, 0, :]
+            pose_seq = np.concatenate((root_pos, pose_seq), axis=1)
+        return pose_seq[start_pose_index:start_pose_index + pose_count]
+
+    seq_dancer1_full = extract_sequence(mocap_data_dancer1)
+    seq_dancer2_full = extract_sequence(mocap_data_dancer2)
+    
+    # Normalize trajectory for network input
+    if train_root_trajectory:
+        seq_dancer1_full[:, :3] = (seq_dancer1_full[:, :3] - root_pos_mean.flatten()) / root_pos_std.flatten()
+        seq_dancer2_full[:, :3] = (seq_dancer2_full[:, :3] - root_pos_mean.flatten()) / root_pos_std.flatten()
+
+    _input_dancer1 = torch.from_numpy(seq_dancer1_full).to(torch.float32).to(device)
+    _input_dancer2 = torch.from_numpy(seq_dancer2_full[:seq_length]).to(torch.float32).to(device)
+    
+    gen_sequence = []
+    
+    for pI in range(0, pose_count - seq_length):
+        print("Generating frame ", pI, " out of ", (pose_count - seq_length))
+        
+        _in_d1 = _input_dancer1[pI:seq_length + pI, :].unsqueeze(0)
+        _in_d2 = _input_dancer2.unsqueeze(0)
+
+        with torch.no_grad():
+            _pred_dancer2 = transformer(_in_d1, _in_d2)
+        
+        pred_pose = _pred_dancer2[0, -1, :]
+        gen_sequence.append(pred_pose.detach().cpu().numpy())
+        _input_dancer2 = torch.cat([_input_dancer2[1:, :], pred_pose.unsqueeze(0)], axis=0)
+        
+    gen_sequence = np.array(gen_sequence)
+    
+    # De-normalize trajectory for export
+    if train_root_trajectory:
+        gen_sequence[:, :3] = (gen_sequence[:, :3] * root_pos_std.flatten()) + root_pos_mean.flatten()
+
+    for fmt in export_formats:
+        if fmt == "gif":
+            export_sequence_gif(gen_sequence, f"{base_file_name}.gif")
+        elif fmt == "bvh":
+            export_sequence_bvh(gen_sequence, mocap_data_dancer2, f"{base_file_name}.bvh")
+        elif fmt == "fbx":
+            export_sequence_fbx(gen_sequence, mocap_data_dancer2, f"{base_file_name}.fbx")
+            
     transformer.train()
 
-base_pose = all_mocap_data_dancer1[0]["motion"]["rot_local"][0]
+# -------------------------------------------------------------------------------------------------
+# Run Exports
+# -------------------------------------------------------------------------------------------------
 
 mocap_index = 0
 start_pose_index = 1000
 pose_count = 1000
 
-create_ref_sequence_anim(mocap_index, start_pose_index, pose_count, "results/anims/ref_dancer1_mocap_{}_start_{}_count_{}.gif".format(mocap_index, start_pose_index, pose_count), "results/anims/ref_dancer2_mocap_{}_start_{}_count_{}.gif".format(mocap_index, start_pose_index, pose_count))
-create_pred_sequence_anim(mocap_index, start_pose_index, pose_count, base_pose, "results/anims/pred_dancer2_mocap_{}_start_{}_count_{}_epoch_{}_test.gif".format(mocap_index, start_pose_index, pose_count, epochs))
+# Base names without extensions 
+ref_base_1 = f"{save_anims_path}/ref_dancer1_mocap_{mocap_index}_start_{start_pose_index}_count_{pose_count}"
+ref_base_2 = f"{save_anims_path}/ref_dancer2_mocap_{mocap_index}_start_{start_pose_index}_count_{pose_count}"
+pred_base = f"{save_anims_path}/pred_dancer2_mocap_{mocap_index}_start_{start_pose_index}_count_{pose_count}_epoch_{epochs}_test"
+
+create_ref_sequence(mocap_index, start_pose_index, pose_count, ref_base_1, ref_base_2, export_formats=save_anim_formats)
+create_pred_sequence(mocap_index, start_pose_index, pose_count, pred_base, export_formats=save_anim_formats)
