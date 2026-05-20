@@ -19,6 +19,7 @@ mocap_file_path = "data/mocap/Jason_Take3.fbx"
 transformer_weights_file = "data/results/weights/transformer_weights_epoch_200"
 
 # Mocap & Transformer Properties
+mocap_fps = 50
 seq_length = 64
 seq_non_teacherforcing = 10 # Set this to match your training script
 pos_encoding_max_length = seq_length + seq_non_teacherforcing
@@ -75,6 +76,9 @@ from PyQt5 import QtWidgets
 
 motion_gui.config["synthesis"] = synthesis
 motion_gui.config["sender"] = osc_sender
+motion_gui.config["osc_ip"] = osc_send_ip
+motion_gui.config["osc_port"] = osc_send_port
+motion_gui.config["mocap_fps"] = mocap_fps
 
 app = QtWidgets.QApplication(sys.argv)
 gui = motion_gui.MotionGui(motion_gui.config)

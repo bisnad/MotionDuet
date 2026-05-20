@@ -28,7 +28,15 @@ class MotionControl():
         self.th.start()
         
     def stop(self):
-        self.server.server_close()
+        if hasattr(self, 'server'):
+            # Tell the serve_forever() loop to stop blocking and exit cleanly
+            self.server.shutdown()
+            # Now it is safe to close the socket
+            self.server.server_close()
+            
+        # If you keep track of your thread (e.g., self.server_thread), join it here
+        if hasattr(self, 'server_thread'):
+            self.server_thread.join()
         
     def setLiveSeq(self, address, *args):
         self.synthesis.setLiveSeq(args)
